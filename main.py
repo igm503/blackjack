@@ -50,11 +50,13 @@ def main(
     counter = PerfectCounter(num_decks)
 
     num_hands = 0
+    num_doubles = 0
     initial_bankroll = bankroll
 
     while bankroll > 0:
+        doubling = False
         if deck.must_shuffle:
-            counter = PerfectCounter(num_decks)
+            counter = NoneCounter(num_decks)
             deck.shuffle()
             print("Shuffling")
 
@@ -104,9 +106,12 @@ def main(
                 counter.count(new_card)
             elif move == Move.DOUBLE:
                 new_card = deck.deal_card()
-                player.add(new_card)
+                print("DOUBLING")
+                doubling = True
+                player.double(new_card)
                 counter.count(new_card)
                 bankroll -= min_bet
+                num_doubles += 1
                 break
             else:
                 break
@@ -141,7 +146,11 @@ def main(
             if player.is_double:
                 bankroll += min_bet
 
+        if doubling:
+            assert player.is_double
+
     print(f"Played {num_hands} hands")
+    print(f"Number of doubles: {num_doubles}")
     print(f"Bet change per hand: {-initial_bankroll / (min_bet * num_hands)}")
 
 
@@ -253,7 +262,7 @@ def get_move(hand: Hand, dealer_face: int, counter: Counter) -> int:
     should_hit = hit_ev > no_hit_ev
     if hand.value <= 10:
         should_hit = True
-    if should_hit and hit_ev > 1.0:
+    if should_hit and hit_ev > 1.0 and hand.can_double:
         return Move.DOUBLE
     elif should_hit:
         return Move.HIT
