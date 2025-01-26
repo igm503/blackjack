@@ -38,11 +38,14 @@ def basic_strategy_hard():
     for hand_value in range(5, 22):
         card1 = hand_value // 2
         card2 = hand_value - card1
-        hand = Hand([card1, card2])
+        if hand_value == 21:
+            hand = Hand([card1, card2, 0])
+        else:
+            hand = Hand([card1, card2])
         string = ""
         for dealer_face in range(2, 12):
             string += get_move_string(hand, dealer_face, counter)
-        string += "\n" +  "-" * 45
+        string += "\n" + "-" * 45
         print(f"{hand_value:3.0f}: {string}")
 
 
@@ -54,11 +57,14 @@ def basic_strategy_soft():
     for hand_value in range(13, 22):
         card1 = 11
         card2 = hand_value - 11
-        hand = Hand([card1, card2])
+        if hand_value == 21:
+            hand = Hand([card1, card2, 0])
+        else:
+            hand = Hand([card1, card2])
         string = ""
         for dealer_face in range(2, 12):
             string += get_move_string(hand, dealer_face, counter)
-        string += "\n" +  "-" * 45
+        string += "\n" + "-" * 45
         print(f"{hand_value:3.0f}: {string}")
 
 

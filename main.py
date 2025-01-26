@@ -27,6 +27,7 @@ class Move:
     STAND = 0
     HIT = 1
     DOUBLE = 2
+    SPLIT = 3
 
 
 def main(
@@ -239,7 +240,7 @@ def get_move(hand: Hand, dealer_face: int, counter: Counter) -> int:
 
     win_prob = sum([prob for value, prob in dealer_probs.items() if hand.value > value])
     push_prob = dealer_probs.get(hand.value, 0.0)
-    no_hit_ev = 2 * win_prob + push_prob
+    stand_ev = 2 * win_prob + push_prob
 
     win_prob = 0.0
     push_prob = 0.0
@@ -259,12 +260,11 @@ def get_move(hand: Hand, dealer_face: int, counter: Counter) -> int:
         hand.pop()
 
     hit_ev = 2 * win_prob + push_prob
-    should_hit = hit_ev > no_hit_ev
-    if hand.value <= 10:
-        should_hit = True
-    if should_hit and hit_ev > 1.0 and hand.can_double:
+    double_ev = 4 * win_prob + 2 * push_prob - 1.0
+    max_ev = max((hit_ev, double_ev, stand_ev))
+    if hand.can_double and max_ev == double_ev:
         return Move.DOUBLE
-    elif should_hit:
+    elif hand.can_hit and (max_ev == hit_ev or hand.value <= 10):
         return Move.HIT
     else:
         return Move.STAND
