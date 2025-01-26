@@ -1,4 +1,4 @@
 -add splitting
--add doubling
 -add insurance
 -add surrender
+-hit decision needs to take into account rollout (hits that get twos on low hands are underrated since they lose unless dealer busts)

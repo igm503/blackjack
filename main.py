@@ -155,7 +155,7 @@ def main(
     print(f"Bet change per hand: {-initial_bankroll / (min_bet * num_hands)}")
 
 
-def dealer_rollout(dealer_hand: Hand, counter: Counter) -> dict[int, float]:
+def dealer_rollout_exact(dealer_hand: Hand, counter: Counter) -> dict[int, float]:
     if dealer_hand.must_hit:
         dealer_probs = defaultdict(float)
         for card in range(2, 12):
@@ -164,7 +164,7 @@ def dealer_rollout(dealer_hand: Hand, counter: Counter) -> dict[int, float]:
             temp_counter.count(card)
             temp_dealer_hand = deepcopy(dealer_hand)
             temp_dealer_hand.add(card)
-            probs = dealer_rollout(temp_dealer_hand, temp_counter)
+            probs = dealer_rollout_exact(temp_dealer_hand, temp_counter)
             for value, prob in probs.items():
                 dealer_probs[value] += card_prob * prob
         return dealer_probs
@@ -178,24 +178,24 @@ def dealer_rollout_approximate(dealer_hand: Hand, counter: Counter) -> dict[int,
     if not dealer_hand.must_hit:
         return {dealer_hand.value: 1.0}
 
-    states = [(v, a) for v in range(2, 22) for a in (True, False)]
+    hard_states = [(v, False) for v in range(4, 22)]
+    soft_states = [(v, True) for v in range(12, 22)]
+    states = hard_states + soft_states
     probs = {}
 
     for value, soft in states:
         if value >= 17 and value <= 21:
             probs[(value, soft)] = {value: 1.0}
-        elif value > 21:
-            probs[(value, soft)] = {0: 1.0}
+
+    if dealer_hand.hit_soft_17:
+        del probs[(17, True)]
 
     need_processing = True
     while need_processing:
         need_processing = False
 
         for value, soft in states:
-            if (value, soft) in probs:
-                continue
-
-            if value > 21:
+            if (value, soft) in probs or value > 21:
                 continue
 
             all_next_states_ready = True
@@ -233,10 +233,25 @@ def dealer_rollout_approximate(dealer_hand: Hand, counter: Counter) -> dict[int,
     return probs[(dealer_hand.value, dealer_hand.is_soft)]
 
 
+def dealer_rollout(
+    dealer_face: int, counter: Counter, no_blackjack: bool = True
+) -> dict[int, float]:
+    dealer_probs = defaultdict(float)
+    for card in range(2, 12):
+        if no_blackjack and dealer_face + card == 21:
+            continue
+        card_prob = counter.probability(card)
+        hand = Hand([dealer_face, card])
+        probs = dealer_rollout_approximate(hand, counter)
+        for value, prob in probs.items():
+            dealer_probs[value] += card_prob * prob
+    return dealer_probs
+
+
 def get_move(hand: Hand, dealer_face: int, counter: Counter) -> int:
     assert not hand.is_bust
 
-    dealer_probs = dealer_rollout_approximate(Hand([dealer_face]), counter)
+    dealer_probs = dealer_rollout(dealer_face, counter)
 
     win_prob = sum([prob for value, prob in dealer_probs.items() if hand.value > value])
     push_prob = dealer_probs.get(hand.value, 0.0)
@@ -251,7 +266,7 @@ def get_move(hand: Hand, dealer_face: int, counter: Counter) -> int:
             hand.pop()
             continue
         counter.count(card)
-        dealer_probs = dealer_rollout_approximate(Hand([dealer_face]), counter)
+        dealer_probs = dealer_rollout(dealer_face, counter)
         win_prob += card_prob * sum(
             [prob for value, prob in dealer_probs.items() if hand.value > value]
         )
