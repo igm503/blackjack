@@ -102,7 +102,11 @@ class Hand:
 
     @property
     def can_hit(self):
-        return not self.is_double and not (self.is_split and not self.hit_split_aces)
+        return (
+            not self.is_double
+            and not (self.is_split and not self.hit_split_aces)
+            and not self.is_bust
+        )
 
     @property
     def must_hit(self):
@@ -115,6 +119,12 @@ class Hand:
 
     @property
     def can_double(self) -> bool:
+        if self.is_split and not self.double_after_split:
+            return False
+        if self.double_on == DoubleOn.NINE_TO_ELEVEN and self.value not in [9, 10, 11]:
+            return False
+        if self.double_on == DoubleOn.TEN_TO_ELEVEN and self.value not in [10, 11]:
+            return False
         return len(self.cards) == 2
 
     @property

@@ -23,6 +23,12 @@ class Surrender:
     LATE = 2
 
 
+class Move:
+    STAND = 0
+    HIT = 1
+    DOUBLE = 2
+
+
 def main(
     min_bet: int,
     bankroll: int,
@@ -56,8 +62,7 @@ def main(
 
         print(f"\n\n Hand {num_hands}, Bankroll: {bankroll}")
         # print(f"Bet change per hand: {(bankroll - initial_bankroll) / (min_bet * num_hands)}")
-        bet = min_bet
-        bankroll -= bet
+        bankroll -= min_bet
 
         dealer = deck.deal_hand()
         player = deck.deal_hand()
@@ -77,7 +82,7 @@ def main(
             if dealer.is_blackjack:
                 if player.is_blackjack:
                     # print("Dealer Blackjack, Push")
-                    bankroll += bet
+                    bankroll += min_bet
                 else:
                     pass
                     # print("Dealer Blackjack, Player Loses")
@@ -86,15 +91,26 @@ def main(
 
         if player.is_blackjack:
             # print("Player Blackjack, Player Wins")
-            assert int((1 + blackjack_payout) * bet) == (1 + blackjack_payout) * bet
-            bankroll += int((1 + blackjack_payout) * bet)
+            assert int((1 + blackjack_payout) * min_bet) == (1 + blackjack_payout) * min_bet
+            bankroll += int((1 + blackjack_payout) * min_bet)
             counter.count(dealer.cards[1])
             continue
 
-        while should_hit(player, dealer_face, counter):
-            new_card = deck.deal_card()
-            player.add(new_card)
-            counter.count(new_card)
+        while not player.is_bust:
+            move = get_move(player, dealer_face, counter)
+            if move == Move.HIT:
+                new_card = deck.deal_card()
+                player.add(new_card)
+                counter.count(new_card)
+            elif move == Move.DOUBLE:
+                new_card = deck.deal_card()
+                player.add(new_card)
+                counter.count(new_card)
+                bankroll -= min_bet
+                break
+            else:
+                break
+
             # print("Player:", player)
 
         if player.is_bust:
@@ -113,13 +129,17 @@ def main(
 
         if dealer.is_bust or player.value > dealer.value:
             # print("Player Wins")
-            bankroll += 2 * bet
+            bankroll += 2 * min_bet
+            if player.is_double:
+                bankroll += 2 * min_bet
         elif player.value < dealer.value:
             # print("Player Loses")
             pass
         else:
             # print("Push")
-            bankroll += bet
+            bankroll += min_bet
+            if player.is_double:
+                bankroll += min_bet
 
     print(f"Played {num_hands} hands")
     print(f"Bet change per hand: {-initial_bankroll / (min_bet * num_hands)}")
@@ -203,11 +223,9 @@ def dealer_rollout_approximate(dealer_hand: Hand, counter: Counter) -> dict[int,
     return probs[(dealer_hand.value, dealer_hand.is_soft)]
 
 
-def should_hit(hand: Hand, dealer_face: int, counter: Counter):
-    if hand.value <= 10:
-        return True
-    if hand.is_bust:
-        return False
+def get_move(hand: Hand, dealer_face: int, counter: Counter) -> int:
+    assert not hand.is_bust
+
     dealer_probs = dealer_rollout_approximate(Hand([dealer_face]), counter)
 
     win_prob = sum([prob for value, prob in dealer_probs.items() if hand.value > value])
@@ -232,8 +250,15 @@ def should_hit(hand: Hand, dealer_face: int, counter: Counter):
         hand.pop()
 
     hit_ev = 2 * win_prob + push_prob
-    # print(f"Hit EV: {hit_ev:.3f}, No Hit EV: {no_hit_ev:.3f}")
-    return hit_ev > no_hit_ev
+    should_hit = hit_ev > no_hit_ev
+    if hand.value <= 10:
+        should_hit = True
+    if should_hit and hit_ev > 1.0:
+        return Move.DOUBLE
+    elif should_hit:
+        return Move.HIT
+    else:
+        return Move.STAND
 
 
 if __name__ == "__main__":
