@@ -122,10 +122,14 @@ def dealer_rollout(dealer_hand: Hand, counter: Counter) -> dict[int, float]:
 
 
 def hit_probs(counter: Counter) -> dict[int, float]:
-    return {card: counter.probability(card) for card in range(2, 11)}
+    probs = {card: counter.probability(card) for card in range(2, 12)}
+    assert sum(probs.values()) == 1.0
+    return probs
 
 
 def should_hit(hand: Hand, dealer_face: int, counter: Counter):
+    if hand.value <= 10:
+        return True
     if hand.is_bust:
         return False
     dealer_probs = dealer_rollout(Hand([dealer_face]), counter)
@@ -150,7 +154,7 @@ def should_hit(hand: Hand, dealer_face: int, counter: Counter):
         push_prob += card_prob * dealer_probs[card + hand.value]
 
     hit_ev = 2 * win_prob + push_prob
-    print(f"Hit EV: {hit_ev:.3f}, No Hit EV: {no_hit_ev:.3f}")
+    # print(f"Hit EV: {hit_ev:.3f}, No Hit EV: {no_hit_ev:.3f}")
     return hit_ev > no_hit_ev
 
 
