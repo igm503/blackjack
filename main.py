@@ -43,20 +43,30 @@ def main(
 
     counter = PerfectCounter(num_decks)
 
+    num_hands = 0
+    initial_bankroll = bankroll
+
     while bankroll > 0:
         if deck.must_shuffle:
+            counter = PerfectCounter(num_decks)
             deck.shuffle()
             print("Shuffling")
 
-        print(f"\n\nBankroll: {bankroll}")
+        num_hands += 1
+
+        print(f"\n\n Hand {num_hands}, Bankroll: {bankroll}")
+        # print(f"Bet change per hand: {(bankroll - initial_bankroll) / (min_bet * num_hands)}")
         bet = min_bet
         bankroll -= bet
 
         dealer = deck.deal_hand()
         player = deck.deal_hand()
 
-        print("Player:", player)
-        print("Dealer:", dealer)
+        counter.count(player.cards)
+        counter.count(dealer.cards[0])
+
+        # print("Player:", player)
+        # print("Dealer:", dealer)
 
         dealer_face = dealer.cards[0]
 
@@ -66,46 +76,59 @@ def main(
                 pass
             if dealer.is_blackjack:
                 if player.is_blackjack:
-                    print("Dealer Blackjack, Push")
+                    # print("Dealer Blackjack, Push")
                     bankroll += bet
                 else:
-                    print("Dealer Blackjack, Player Loses")
+                    pass
+                    # print("Dealer Blackjack, Player Loses")
+                counter.count(dealer.cards[1])
                 continue
 
         if player.is_blackjack:
-            print("Player Blackjack, Player Wins")
+            # print("Player Blackjack, Player Wins")
             assert int((1 + blackjack_payout) * bet) == (1 + blackjack_payout) * bet
             bankroll += int((1 + blackjack_payout) * bet)
+            counter.count(dealer.cards[1])
             continue
 
         while should_hit(player, dealer_face, counter):
-            player.add(deck.deal_card())
-            print("Player:", player)
+            new_card = deck.deal_card()
+            player.add(new_card)
+            counter.count(new_card)
+            # print("Player:", player)
 
         if player.is_bust:
-            print("Player Bust, Player Loses")
+            # print("Player Bust, Player Loses")
+            counter.count(dealer.cards[1])
             continue
 
+        counter.count(dealer.cards[1])
         while dealer.must_hit:
-            dealer.add(deck.deal_card())
+            new_card = deck.deal_card()
+            dealer.add(new_card)
+            counter.count(new_card)
 
-        print("Player:", player)
-        print("Dealer:", dealer)
+        # print("Player:", player)
+        # print("Dealer:", dealer)
 
         if dealer.is_bust or player.value > dealer.value:
-            print("Player Wins")
+            # print("Player Wins")
             bankroll += 2 * bet
         elif player.value < dealer.value:
-            print("Player Loses")
+            # print("Player Loses")
+            pass
         else:
-            print("Push")
+            # print("Push")
             bankroll += bet
+
+    print(f"Played {num_hands} hands")
+    print(f"Bet change per hand: {-initial_bankroll / (min_bet * num_hands)}")
 
 
 def dealer_rollout(dealer_hand: Hand, counter: Counter) -> dict[int, float]:
     if dealer_hand.must_hit:
         dealer_probs = defaultdict(float)
-        for card in range(2, 11):
+        for card in range(2, 12):
             card_prob = counter.probability(card)
             temp_counter = deepcopy(counter)
             temp_counter.count(card)
@@ -121,10 +144,63 @@ def dealer_rollout(dealer_hand: Hand, counter: Counter) -> dict[int, float]:
         return {value: 1.0}
 
 
-def hit_probs(counter: Counter) -> dict[int, float]:
-    probs = {card: counter.probability(card) for card in range(2, 12)}
-    assert sum(probs.values()) == 1.0
-    return probs
+def dealer_rollout_approximate(dealer_hand: Hand, counter: Counter) -> dict[int, float]:
+    if not dealer_hand.must_hit:
+        return {dealer_hand.value: 1.0}
+
+    states = [(v, a) for v in range(2, 22) for a in (True, False)]
+    probs = {}
+
+    for value, soft in states:
+        if value >= 17 and value <= 21:
+            probs[(value, soft)] = {value: 1.0}
+        elif value > 21:
+            probs[(value, soft)] = {0: 1.0}
+
+    need_processing = True
+    while need_processing:
+        need_processing = False
+
+        for value, soft in states:
+            if (value, soft) in probs:
+                continue
+
+            if value > 21:
+                continue
+
+            all_next_states_ready = True
+            dealer_probs = defaultdict(float)
+
+            for card in range(2, 12):
+                card_prob = counter.probability(card)
+                if card_prob == 0:
+                    continue
+
+                new_value = value + card
+                new_soft = soft or card == 11
+
+                if new_value > 21 and new_soft:
+                    new_value -= 10
+                    new_soft = False
+
+                if new_value <= 21 and (new_value, new_soft) not in probs:
+                    all_next_states_ready = False
+                    break
+
+                if new_value > 21:
+                    dealer_probs[0] += card_prob
+                    continue
+
+                next_probs = probs[(new_value, new_soft)]
+                for val, prob in next_probs.items():
+                    dealer_probs[val] += card_prob * prob
+
+            if all_next_states_ready:
+                probs[(value, soft)] = dict(dealer_probs)
+            else:
+                need_processing = True
+
+    return probs[(dealer_hand.value, dealer_hand.is_soft)]
 
 
 def should_hit(hand: Hand, dealer_face: int, counter: Counter):
@@ -132,26 +208,28 @@ def should_hit(hand: Hand, dealer_face: int, counter: Counter):
         return True
     if hand.is_bust:
         return False
-    dealer_probs = dealer_rollout(Hand([dealer_face]), counter)
+    dealer_probs = dealer_rollout_approximate(Hand([dealer_face]), counter)
+
     win_prob = sum([prob for value, prob in dealer_probs.items() if hand.value > value])
-    push_prob = dealer_probs[hand.value]
+    push_prob = dealer_probs.get(hand.value, 0.0)
     no_hit_ev = 2 * win_prob + push_prob
 
-    hit_card_probs = hit_probs(counter)
     win_prob = 0.0
     push_prob = 0.0
-    for card, card_prob in hit_card_probs.items():
-        temp_hand = deepcopy(hand)
-        temp_hand.add(card)
-        if temp_hand.is_bust:
+    for card in range(2, 12):
+        card_prob = counter.probability(card)
+        hand.add(card)
+        if hand.is_bust:
+            hand.pop()
             continue
-        temp_counter = deepcopy(counter)
-        temp_counter.count(card)
-        dealer_probs = dealer_rollout(Hand([dealer_face]), temp_counter)
+        counter.count(card)
+        dealer_probs = dealer_rollout_approximate(Hand([dealer_face]), counter)
         win_prob += card_prob * sum(
-            [prob for value, prob in dealer_probs.items() if temp_hand.value > value]
+            [prob for value, prob in dealer_probs.items() if hand.value > value]
         )
-        push_prob += card_prob * dealer_probs[card + hand.value]
+        push_prob += card_prob * dealer_probs.get(hand.value, 0.0)
+        counter.uncount(card)
+        hand.pop()
 
     hit_ev = 2 * win_prob + push_prob
     # print(f"Hit EV: {hit_ev:.3f}, No Hit EV: {no_hit_ev:.3f}")
@@ -260,7 +338,7 @@ if __name__ == "__main__":
         surrender = Surrender.EARLY
 
     main(
-        10,
+        2,
         1000,
         args.decks,
         blackjack_payout,

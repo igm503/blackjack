@@ -3,7 +3,7 @@ import random
 
 
 class Deck:
-    def __init__(self, num_decks, penetration=0.5):
+    def __init__(self, num_decks, penetration=0.9):
         self.num_cards = num_decks * 52
         self.penetration = penetration
         suit = [2, 3, 4, 5, 6, 7, 8, 9, 10, 10, 10, 10, 11]
@@ -29,6 +29,12 @@ class Deck:
     @property
     def must_shuffle(self):
         return len(self.discard) > self.num_cards * self.penetration
+
+    def __str__(self):
+        count = {2: 0, 3: 0, 4: 0, 5: 0, 6: 0, 7: 0, 8: 0, 9: 0, 10: 0, 11: 0}
+        for card in self.cards:
+            count[card] += 1
+        return str(count)
 
 
 class DoubleOn:
@@ -59,6 +65,12 @@ class Hand:
 
     def add(self, card: int) -> None:
         self.cards.append(card)
+
+    def remove(self, card: int) -> None:
+        self.cards.remove(card)
+
+    def pop(self) -> int:
+        return self.cards.pop()
 
     def split(self, deck: Deck) -> tuple[Hand, Hand]:
         assert self.can_split

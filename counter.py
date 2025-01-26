@@ -7,6 +7,10 @@ class Counter(ABC):
         pass
 
     @abstractmethod
+    def uncount(self, card: int) -> None:
+        pass
+
+    @abstractmethod
     def probability(self, card: int) -> float:
         pass
 
@@ -26,6 +30,10 @@ class PerfectCounter(Counter):
         else:
             self.remaining[card] -= 1
             self.total_remaining -= 1
+
+    def uncount(self, card: int) -> None:
+        self.remaining[card] += 1
+        self.total_remaining += 1
 
     def probability(self, card: int) -> float:
         return self.remaining[card] / self.total_remaining
@@ -47,6 +55,13 @@ class HighLowCounter(Counter):
                 self.running_count -= 1
             self.total_remaining -= 1
 
+    def uncount(self, card: int) -> None:
+        if card < 7:
+            self.running_count -= 1
+        elif card > 9:
+            self.running_count += 1
+        self.total_remaining += 1
+
     def probability(self, card: int) -> float:
         naive_num_remaining = self.total_remaining * (5 / 13)
         if card < 7:
@@ -66,6 +81,9 @@ class NoneCounter(Counter):
         pass
 
     def count(self, card: int | list[int]) -> None:
+        pass
+
+    def uncount(self, card: int) -> None:
         pass
 
     def probability(self, card: int) -> float:
