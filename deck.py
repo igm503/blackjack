@@ -48,7 +48,7 @@ class Hand:
     double_on: int = DoubleOn.ANY
     hit_split_aces: bool = False
     resplit_aces: bool = False
-    hit_soft_17: bool = False
+    hit_soft_17: bool = True
 
     @classmethod
     def set_rules(cls, hit_soft_17, double_after_split, double_on, hit_split_aces, resplit_aces):

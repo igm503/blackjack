@@ -198,12 +198,12 @@ def dealer_rollout_approximate(dealer_hand: Hand, counter: Counter) -> dict[int,
             if (value, soft) in probs or value > 21:
                 continue
 
-            all_next_states_ready = True
+            next_states_ready = True
             dealer_probs = defaultdict(float)
 
             for card in range(2, 12):
                 card_prob = counter.probability(card)
-                if card_prob == 0:
+                if card_prob <= 0:
                     continue
 
                 new_value = value + card
@@ -214,7 +214,7 @@ def dealer_rollout_approximate(dealer_hand: Hand, counter: Counter) -> dict[int,
                     new_soft = False
 
                 if new_value <= 21 and (new_value, new_soft) not in probs:
-                    all_next_states_ready = False
+                    next_states_ready = False
                     break
 
                 if new_value > 21:
@@ -225,7 +225,7 @@ def dealer_rollout_approximate(dealer_hand: Hand, counter: Counter) -> dict[int,
                 for val, prob in next_probs.items():
                     dealer_probs[val] += card_prob * prob
 
-            if all_next_states_ready:
+            if next_states_ready:
                 probs[(value, soft)] = dict(dealer_probs)
             else:
                 need_processing = True
@@ -238,44 +238,80 @@ def dealer_rollout(
 ) -> dict[int, float]:
     dealer_probs = defaultdict(float)
     for card in range(2, 12):
-        if no_blackjack and dealer_face + card == 21:
+        hand = Hand([dealer_face, card])
+        if no_blackjack and hand.is_blackjack:
             continue
         card_prob = counter.probability(card)
-        hand = Hand([dealer_face, card])
         probs = dealer_rollout_approximate(hand, counter)
         for value, prob in probs.items():
             dealer_probs[value] += card_prob * prob
     return dealer_probs
 
 
+def get_hand_evs(dealer_probs: dict[int, float], counter: Counter):
+    soft_states = [(v, True) for v in range(12, 22)]
+    hard_states = [(v, False) for v in range(4, 22)]
+    states = soft_states + hard_states
+
+    stand_evs = defaultdict(float)
+
+    for value, is_soft in states:
+        for dealer_value, prob in dealer_probs.items():
+            if value > dealer_value:
+                stand_evs[(value, is_soft)] += 2 * prob
+            elif value == dealer_value:
+                stand_evs[(value, is_soft)] += prob
+
+    hit_evs = {}
+    double_evs = {}
+
+    needs_processing = True
+    while needs_processing:
+        needs_processing = False
+        for value, is_soft in states:
+            hit_ev = 0
+            double_ev = -1
+            next_states_ready = True
+            for card in range(2, 12):
+                card_prob = counter.probability(card)
+                if card_prob <= 0:
+                    continue
+
+                new_value = value + card
+                new_soft = is_soft or card == 11
+                if new_value > 21 and new_soft:
+                    new_value -= 10
+                    new_soft = False
+
+                if new_value > 21:
+                    continue
+
+                if (new_value, new_soft) not in hit_evs:
+                    needs_processing = True
+                    next_states_ready = False
+                    break
+
+                next_hit_ev = hit_evs[(new_value, new_soft)]
+                next_stand_ev = stand_evs[(new_value, new_soft)]
+                hit_ev += card_prob * max(next_hit_ev, next_stand_ev)
+                double_ev += 2 * card_prob * next_stand_ev
+
+            if next_states_ready:
+                hit_evs[(value, is_soft)] = hit_ev
+                double_evs[(value, is_soft)] = double_ev
+
+    return stand_evs, hit_evs, double_evs
+
+
 def get_move(hand: Hand, dealer_face: int, counter: Counter) -> int:
     assert not hand.is_bust
 
     dealer_probs = dealer_rollout(dealer_face, counter)
+    stand_evs, hit_evs, double_evs = get_hand_evs(dealer_probs, counter)
 
-    win_prob = sum([prob for value, prob in dealer_probs.items() if hand.value > value])
-    push_prob = dealer_probs.get(hand.value, 0.0)
-    stand_ev = 2 * win_prob + push_prob
-
-    win_prob = 0.0
-    push_prob = 0.0
-    for card in range(2, 12):
-        card_prob = counter.probability(card)
-        hand.add(card)
-        if hand.is_bust:
-            hand.pop()
-            continue
-        counter.count(card)
-        dealer_probs = dealer_rollout(dealer_face, counter)
-        win_prob += card_prob * sum(
-            [prob for value, prob in dealer_probs.items() if hand.value > value]
-        )
-        push_prob += card_prob * dealer_probs.get(hand.value, 0.0)
-        counter.uncount(card)
-        hand.pop()
-
-    hit_ev = 2 * win_prob + push_prob
-    double_ev = 4 * win_prob + 2 * push_prob - 1.0
+    stand_ev = stand_evs[(hand.value, hand.is_soft)]
+    hit_ev = hit_evs[(hand.value, hand.is_soft)]
+    double_ev = double_evs[(hand.value, hand.is_soft)]
     max_ev = max((hit_ev, double_ev, stand_ev))
     if hand.can_double and max_ev == double_ev:
         return Move.DOUBLE
