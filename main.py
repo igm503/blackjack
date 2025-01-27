@@ -57,7 +57,7 @@ def main(
     while bankroll > 0:
         doubling = False
         if deck.must_shuffle:
-            counter = NoneCounter(num_decks)
+            counter = PerfectCounter(num_decks)
             deck.shuffle()
             print("Shuffling")
 
@@ -99,6 +99,7 @@ def main(
             counter.count(dealer.cards[1])
             continue
 
+        hands = [player]
         while not player.is_bust:
             move = get_move(player, dealer_face, counter)
             if move == Move.HIT:
@@ -114,6 +115,9 @@ def main(
                 bankroll -= min_bet
                 num_doubles += 1
                 break
+            elif move == Move.SPLIT:
+                pass
+
             else:
                 break
 
@@ -203,8 +207,6 @@ def dealer_rollout_approximate(dealer_hand: Hand, counter: Counter) -> dict[int,
 
             for card in range(2, 12):
                 card_prob = counter.probability(card)
-                if card_prob <= 0:
-                    continue
 
                 new_value = value + card
                 new_soft = soft or card == 11
@@ -245,6 +247,16 @@ def dealer_rollout(
         probs = dealer_rollout_approximate(hand, counter)
         for value, prob in probs.items():
             dealer_probs[value] += card_prob * prob
+    if dealer_face not in [10, 11]:
+        assert sum(dealer_probs.values()) - 1 < 1e-6
+    else:
+        if dealer_face == 11:
+            missing_prob = counter.probability(10)
+        else:
+            missing_prob = counter.probability(11)
+        norm_factor = 1 / (1 - missing_prob)
+        for value, prob in dealer_probs.items():
+            dealer_probs[value] = norm_factor * prob
     return dealer_probs
 
 
@@ -258,9 +270,9 @@ def get_hand_evs(dealer_probs: dict[int, float], counter: Counter):
     for value, is_soft in states:
         for dealer_value, prob in dealer_probs.items():
             if value > dealer_value:
-                stand_evs[(value, is_soft)] += 2 * prob
-            elif value == dealer_value:
                 stand_evs[(value, is_soft)] += prob
+            elif value < dealer_value:
+                stand_evs[(value, is_soft)] -= prob
 
     hit_evs = {}
     double_evs = {}
@@ -270,12 +282,10 @@ def get_hand_evs(dealer_probs: dict[int, float], counter: Counter):
         needs_processing = False
         for value, is_soft in states:
             hit_ev = 0
-            double_ev = -1
+            double_ev = 0
             next_states_ready = True
             for card in range(2, 12):
                 card_prob = counter.probability(card)
-                if card_prob <= 0:
-                    continue
 
                 new_value = value + card
                 new_soft = is_soft or card == 11
@@ -284,6 +294,8 @@ def get_hand_evs(dealer_probs: dict[int, float], counter: Counter):
                     new_soft = False
 
                 if new_value > 21:
+                    hit_ev -= card_prob
+                    double_ev -= 2 * card_prob
                     continue
 
                 if (new_value, new_soft) not in hit_evs:
@@ -303,20 +315,68 @@ def get_hand_evs(dealer_probs: dict[int, float], counter: Counter):
     return stand_evs, hit_evs, double_evs
 
 
-def get_move(hand: Hand, dealer_face: int, counter: Counter) -> int:
+def get_split_ev(
+    hand: Hand,
+    stand_ev: dict[tuple[int, bool], float],
+    hit_ev: dict[tuple[int, bool], float],
+    double_ev: dict[tuple[int, bool], float],
+    counter: Counter,
+    num_splits: int,
+) -> float:
+    split_card = hand.cards[0]
+
+    terminal_split_ev = 0.0
+    split_hand = Hand([split_card])
+    split_card_ev = None
+    for card in range(2, 12):
+        card_prob = counter.probability(card)
+        split_hand.add(card)
+        value = split_hand.value
+        is_soft = split_hand.is_soft
+        evs = [stand_ev[(value, is_soft)]]
+        if hand.hit_split_aces or split_card != 11:
+            evs.append(hit_ev[(value, is_soft)])
+            if hand.double_after_split:
+                evs.append(double_ev[(value, is_soft)])
+        ev = max(evs)
+        if card == split_card:
+            split_card_ev = ev
+        terminal_split_ev += 2 * card_prob * ev
+        split_hand.remove(card)
+
+    split_ev = terminal_split_ev
+    if num_splits > 1 and (hand.resplit_aces or split_card != 11):
+        num_splits -= 1
+        resplit_prob = counter.probability(split_card)
+        assert split_card_ev is not None
+        if split_ev > split_card_ev:
+            split_ev -= (2 - num_splits) * resplit_prob * split_card_ev
+            split_ev += (num_splits) * resplit_prob * split_ev
+
+    return split_ev
+
+
+def get_move(hand: Hand, dealer_face: int, counter: Counter, num_splits: int = 3) -> int:
     assert not hand.is_bust
 
     dealer_probs = dealer_rollout(dealer_face, counter)
     stand_evs, hit_evs, double_evs = get_hand_evs(dealer_probs, counter)
-
     stand_ev = stand_evs[(hand.value, hand.is_soft)]
     hit_ev = hit_evs[(hand.value, hand.is_soft)]
     double_ev = double_evs[(hand.value, hand.is_soft)]
-    max_ev = max((hit_ev, double_ev, stand_ev))
+    split_ev = float("-inf")
+    if hand.can_split and num_splits > 0:
+        split_ev = get_split_ev(hand, stand_evs, hit_evs, double_evs, counter, num_splits)
+    max_ev = max((stand_ev, hit_ev, double_ev, split_ev))
+    # print(
+    #     f"{hand}: stand: {stand_ev:.2f} hit: {hit_ev:.2f} double: {double_ev:.2f} split: {split_ev:.2f}"
+    # )
     if hand.can_double and max_ev == double_ev:
         return Move.DOUBLE
-    elif hand.can_hit and (max_ev == hit_ev or hand.value <= 10):
+    elif hand.can_hit and max_ev == hit_ev:
         return Move.HIT
+    elif hand.can_split and max_ev == split_ev:
+        return Move.SPLIT
     else:
         return Move.STAND
 
