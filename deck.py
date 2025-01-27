@@ -72,11 +72,11 @@ class Hand:
     def pop(self) -> int:
         return self.cards.pop()
 
-    def split(self, deck: Deck) -> tuple[Hand, Hand]:
+    def split(self, card1: int, card2: int) -> tuple[Hand, Hand]:
         assert self.can_split
         return (
-            Hand([self.cards[0], deck.deal_card()], is_split=True),
-            Hand([self.cards[1], deck.deal_card()], is_split=True),
+            Hand([self.cards[0], card1], is_split=True),
+            Hand([self.cards[1], card2], is_split=True),
         )
 
     def double(self, card):
@@ -109,12 +109,9 @@ class Hand:
         )
 
     @property
-    def must_hit(self):
-        value = self.value
-        return value < 17 or (value == 17 and self.is_soft and self.hit_soft_17)
-
-    @property
     def can_split(self) -> bool:
+        if not self.resplit_aces and self.is_split and self.cards[0] == 11:
+            return False
         return len(self.cards) == 2 and self.cards[0] == self.cards[1]
 
     @property
@@ -125,7 +122,7 @@ class Hand:
             return False
         if self.double_on == DoubleOn.TEN_TO_ELEVEN and self.value not in [10, 11]:
             return False
-        return len(self.cards) == 2
+        return len(self.cards) == 2 and self.value != 21
 
     @property
     def is_bust(self):
@@ -137,3 +134,8 @@ class Hand:
 
     def __str__(self):
         return str(self.cards)
+
+    @property
+    def must_hit(self):
+        value = self.value
+        return value < 17 or (value == 17 and self.is_soft and self.hit_soft_17)
