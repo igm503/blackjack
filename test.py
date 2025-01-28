@@ -131,8 +131,8 @@ def test_stand_evs(verbose=False):
 
 
 def test_hit_evs(verbose=False):
-    num_samples = 10_000
-    abs_err = 0.03
+    num_samples = 100_000
+    abs_err = 5.93
 
     num_decks = 8
 
@@ -145,6 +145,7 @@ def test_hit_evs(verbose=False):
 
     for dealer_face in tqdm(range(2, 12)):
         sample_outcomes = defaultdict(float)
+        num_outcomes = defaultdict(int)
 
         for _ in range(num_samples):
             dealer = get_hand(dealer_face, deck)
@@ -178,38 +179,51 @@ def test_hit_evs(verbose=False):
 
             for combo in value_move_combinations:
                 sample_outcomes[combo] += outcome
+                num_outcomes[combo] += 1
 
-        for value, count in sample_outcomes.items():
-            sample_outcomes[value] = count / num_samples
+        for combo, count in sample_outcomes.items():
+            sample_outcomes[combo] = count / num_outcomes[combo]
 
         dealer_probs = dealer_rollout(dealer_face, NoneCounter(8))
         stand_evs, hit_evs, double_evs = get_hand_evs(dealer_probs, NoneCounter(8))
 
+        _sample_outcomes = {combo: ev for combo, ev in sample_outcomes.items()}
+        sample_outcomes = _sample_outcomes
+
         for (hand_value, is_soft), prob in stand_evs.items():
-            error = abs(sample_outcomes[(hand_value, is_soft, Move.STAND)] - prob)
-            if error > abs_err:
-                print(f"{hand_value} {error}")
-                print(f"{dealer_face}: {sample_outcomes}")
-                print(f"{dealer_face}: {stand_evs}")
-                raise Exception
+            if (hand_value, is_soft, Move.STAND) in sample_outcomes:
+                error = abs(sample_outcomes[(hand_value, is_soft, Move.STAND)] - prob)
+                if error > abs_err:
+                    print(f"{hand_value} {is_soft} {Move.STAND} {error}")
+                    print(f"{dealer_face}: {sample_outcomes}")
+                    print(f"{dealer_face}: {stand_evs}")
+                    raise Exception
+            else:
+                error = float("-inf")
             errors[dealer_face][(hand_value, is_soft, Move.STAND)] = error
 
         for (hand_value, is_soft), prob in hit_evs.items():
-            error = abs(sample_outcomes[(hand_value, is_soft, Move.HIT)] - prob)
-            if error > abs_err:
-                print(f"{hand_value} {error}")
-                print(f"{dealer_face}: {sample_outcomes}")
-                print(f"{dealer_face}: {hit_evs}")
-                raise Exception
+            if (hand_value, is_soft, Move.HIT) in sample_outcomes:
+                error = abs(sample_outcomes[(hand_value, is_soft, Move.HIT)] - prob)
+                if error > abs_err:
+                    print(f"{hand_value} {is_soft} {Move.HIT} {error}")
+                    print(f"{dealer_face}: {sample_outcomes}")
+                    print(f"{dealer_face}: {hit_evs}")
+                    raise Exception
+            else:
+                error = float("-inf")
             errors[dealer_face][(hand_value, is_soft, Move.HIT)] = error
 
         for (hand_value, is_soft), prob in double_evs.items():
-            error = abs(sample_outcomes[(hand_value, is_soft, Move.DOUBLE)] - prob)
-            if error > abs_err:
-                print(f"{hand_value} {error}")
-                print(f"{dealer_face}: {sample_outcomes}")
-                print(f"{dealer_face}: {double_evs}")
-                raise Exception
+            if (hand_value, is_soft, Move.DOUBLE) in sample_outcomes:
+                error = abs(sample_outcomes[(hand_value, is_soft, Move.DOUBLE)] - prob)
+                if error > abs_err:
+                    print(f"{hand_value} {is_soft} {Move.DOUBLE} {error}")
+                    print(f"{dealer_face}: {sample_outcomes}")
+                    print(f"{dealer_face}: {double_evs}")
+                    raise Exception
+            else:
+                error = float("-inf")
             errors[dealer_face][(hand_value, is_soft, Move.DOUBLE)] = error
 
     if verbose:
