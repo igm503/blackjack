@@ -257,6 +257,7 @@ def dealer_rollout(
         norm_factor = 1 / (1 - missing_prob)
         for value, prob in dealer_probs.items():
             dealer_probs[value] = norm_factor * prob
+        assert sum(dealer_probs.values()) - 1 < 1e-6
     return dealer_probs
 
 

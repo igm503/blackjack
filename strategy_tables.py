@@ -1,8 +1,6 @@
-from collections import defaultdict
-
-from main import get_move, Move, dealer_rollout, get_hand_evs, get_split_ev
+from main import get_move, Move
 from deck import Hand
-from counter import NoneCounter, Counter
+from counter import NoneCounter
 
 GREEN = "\033[92m"
 RED = "\033[95m"
@@ -83,13 +81,3 @@ print("\n\n")
 basic_strategy_soft()
 print("\n\n")
 basic_strategy_pair()
-
-#
-# dealer_probs = dealer_rollout(11, NoneCounter(1))
-# stand_evs, hit_evs, double_evs = get_hand_evs(
-#     dealer_probs,
-#     NoneCounter(1),
-# )
-#
-# for i in sorted(hit_evs.keys()):
-#     print(f"{i}: {double_evs[i]:.3f} {hit_evs[i]:.3f} {stand_evs[i]:.3f}")
