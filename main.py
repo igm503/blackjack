@@ -59,7 +59,7 @@ def main(
             deck.shuffle()
             print("Shuffling")
 
-        hand_ev = get_hand_ev(counter, resplit_limit, blackjack_payout)
+        hand_ev = get_hand_ev(counter, resplit_limit, blackjack_payout, surrender)
         print(f"Hand {num_hands}, Bankroll: {bankroll}, Hand EV: {hand_ev}")
 
         num_hands += 1
@@ -177,53 +177,73 @@ def main(
     print(f"Bet change per hand: {-initial_bankroll / (min_bet * num_hands)}")
 
 
-def get_hand_ev(counter: Counter, max_splits: int, blackjack_payout: float):
-    all_dealer_probs = defaultdict(float)
+def get_hand_ev(counter: Counter, max_splits: int, blackjack_payout: float, surrender: int):
+    final_hand_ev = 0.0
     for dealer_face in range(2, 12):
-        card_prob = counter.probability(dealer_face)
+        face_prob = counter.probability(dealer_face)
+        counter.count(dealer_face)
         dealer_probs = dealer_rollout(dealer_face, counter, no_blackjack=False)
-        for value, prob in dealer_probs.items():
-            all_dealer_probs[value] += card_prob * prob
 
-    assert sum(all_dealer_probs.values()) - 1 < 1e-6
+        blackjack_prob = dealer_probs["blackjack"]
+        for value in dealer_probs:
+            dealer_probs[value] /= 1 - blackjack_prob
+        del dealer_probs["blackjack"]
 
-    blackjack_prob = all_dealer_probs["blackjack"]
-    for value in all_dealer_probs:
-        all_dealer_probs[value] /= 1 - blackjack_prob
-    del all_dealer_probs["blackjack"]
+        hand_ev = 0.0
+        prob_early_surrender = 0.0
+        player_blackjack_prob = 0.0
+        stand_evs, hit_evs, double_evs = get_hand_evs(dealer_probs, counter)
+        for card in range(2, 12):
+            card1_prob = counter.probability(card)
+            counter.count(card)
+            for second_card in range(card, 12):
+                hand_prob = card1_prob * counter.probability(second_card)
+                counter.count(second_card)
+                hand = Hand([card, second_card])
+                if hand.can_split:
+                    split_ev = get_split_ev(
+                        hand, stand_evs, hit_evs, double_evs, counter, max_splits
+                    )
+                else:
+                    split_ev = float("-inf")
+                    hand_prob *= 2  # permutation variants are twice as likely
+                if hand.is_blackjack:
+                    hand_ev += hand_prob * blackjack_payout
+                    player_blackjack_prob = hand_ev
+                    counter.uncount(second_card)
+                    continue
+                value = hand.value
+                is_soft = hand.is_soft
+                stand_ev = stand_evs[(value, is_soft)]
+                hit_ev = hit_evs[(value, is_soft)]
+                double_ev = double_evs[(value, is_soft)]
+                ev = max(stand_ev, hit_ev, double_ev, split_ev)
+                if surrender == Surrender.EARLY:
+                    _ev = ev * (1 - blackjack_prob)
+                    _ev -= blackjack_prob
+                    if _ev < -0.5:
+                        ev = -0.5
+                        prob_early_surrender += hand_prob
+                        counter.uncount(second_card)
+                        continue
+                elif surrender == Surrender.LATE:
+                    ev = max(ev, -0.5)
+                hand_ev += hand_prob * ev
+                counter.uncount(second_card)
+            counter.uncount(card)
 
-    assert sum(all_dealer_probs.values()) - 1 < 1e-6
+        hand_ev *= 1 - blackjack_prob
+        hand_ev += blackjack_prob * player_blackjack_prob
+        hand_ev -= blackjack_prob * (1 - player_blackjack_prob)
 
-    hand_ev = 0
-    stand_evs, hit_evs, double_evs = get_hand_evs(all_dealer_probs, counter)
-    for card in range(2, 12):
-        card1_prob = counter.probability(card)
-        for second_card in range(card, 12):
-            hand_prob = card1_prob * counter.probability(second_card)
-            hand = Hand([card, second_card])
-            if hand.is_blackjack:
-                hand_ev += (
-                    2 * hand_prob * blackjack_payout
-                )  # permutation variants are twice as likely
-                continue
-            if hand.can_split:
-                split_ev = get_split_ev(hand, stand_evs, hit_evs, double_evs, counter, max_splits)
-            else:
-                split_ev = float("-inf")
-                hand_prob *= 2  # perumatation variants are twice as likely
-            value = hand.value
-            is_soft = hand.is_soft
-            stand_ev = stand_evs[(value, is_soft)]
-            hit_ev = hit_evs[(value, is_soft)]
-            double_ev = double_evs[(value, is_soft)]
-            ev = max(stand_ev, hit_ev, double_ev, split_ev)
-            hand_ev += hand_prob * ev
+        if surrender == Surrender.EARLY:
+            hand_ev *= 1 - prob_early_surrender
+            hand_ev += prob_early_surrender * -0.5
 
-    hand_ev *= 1 - blackjack_prob
-    hand_ev += blackjack_prob * blackjack_prob
-    hand_ev -= blackjack_prob * (1 - blackjack_prob)
+        final_hand_ev += hand_ev * face_prob
+        counter.uncount(dealer_face)
 
-    return hand_ev
+    return final_hand_ev
 
 
 def should_surrender(
@@ -258,8 +278,7 @@ def should_surrender(
             return False
         else:
             player_ev *= 1 - blackjack_prob
-            player_ev += blackjack_prob * blackjack_prob
-            player_ev -= blackjack_prob * (1 - blackjack_prob)
+            player_ev -= blackjack_prob
     return player_ev < -0.5
 
 
