@@ -59,7 +59,8 @@ def main(
             deck.shuffle()
             print("Shuffling")
 
-        hand_ev = get_hand_ev(counter, resplit_limit, blackjack_payout, surrender)
+        # hand_ev = get_hand_ev(counter, resplit_limit, blackjack_payout, surrender)
+        hand_ev = 0
         print(f"Hand {num_hands}, Bankroll: {bankroll}, Hand EV: {hand_ev}")
 
         num_hands += 1
@@ -115,6 +116,9 @@ def main(
             if not current_hands:
                 break
             for hand in current_hands[::-1]:
+                if hand.is_bust:
+                    current_hands.remove(hand)
+                    continue
                 while not hand.is_bust:
                     move = get_move(
                         hand,
@@ -147,8 +151,6 @@ def main(
                         finished_hands.append(hand)
                         current_hands.remove(hand)
                         break
-                if hand.is_bust:
-                    current_hands.remove(hand)
 
         counter.count(dealer.cards[1])
         all_bust = all(hand.is_bust for hand in finished_hands)
@@ -508,6 +510,14 @@ def get_move(hand: Hand, dealer_face: int, counter: Counter, num_splits: int = 3
         return Move.STAND
 
 
+def get_kelly_bet(hand_ev: float, bankroll: float, min_bet: int) -> int:
+    p = (hand_ev + 1) / 2
+    ratio = p - ((1 - p) / 1)  # ignoring blackjack payout and other things like that``
+    max_bet = int(bankroll * ratio)
+    bet = max_bet - max_bet % min_bet
+    return max(bet, 0)
+
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Configure blackjack game rules")
 
@@ -520,7 +530,7 @@ if __name__ == "__main__":
         "resplit_aces": True,
         "hit_split_aces": True,
         "original_bet_only": True,
-        "surrender": Surrender.LATE,
+        "surrender": Surrender.NONE,
         "blackjack_payout": BlackJackPayout.THREE_TWO,
     }
 
