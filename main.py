@@ -75,6 +75,15 @@ def main(
 
         dealer_face = dealer.cards[0]
 
+        if surrender == Surrender.EARLY:
+            player_surrender = should_surrender(
+                player, dealer_face, counter, resplit_limit, early=False
+            )
+            if player_surrender:
+                bankroll += min_bet / 2
+                counter.count(dealer.cards[1])
+                continue
+
         if dealer_face in [10, 11]:
             if dealer_face == 11:
                 # do insurance
@@ -84,6 +93,13 @@ def main(
                     bankroll += min_bet
                 else:
                     pass
+                counter.count(dealer.cards[1])
+                continue
+
+        if surrender == Surrender.LATE:
+            player_surrender = should_surrender(player, dealer_face, counter, resplit_limit)
+            if player_surrender:
+                bankroll += min_bet / 2
                 counter.count(dealer.cards[1])
                 continue
 
@@ -219,9 +235,32 @@ def should_surrender(
 ):
     if early:
         dealer_probs = dealer_rollout(dealer_face, counter, no_blackjack=False)
+        blackjack_prob = dealer_probs["blackjack"]
+        del dealer_probs["blackjack"]
+        for value in dealer_probs:
+            dealer_probs[value] /= 1 - blackjack_prob
     else:
         dealer_probs = dealer_rollout(dealer_face, counter)
-    return False
+        blackjack_prob = 0.0
+
+    stand_evs, hit_evs, double_evs = get_hand_evs(dealer_probs, counter)
+    stand_ev = stand_evs[(player.value, player.is_soft)]
+    hit_ev = hit_evs[(player.value, player.is_soft)]
+    double_ev = double_evs[(player.value, player.is_soft)]
+    if player.can_split and resplit_limit > 0:
+        split_ev = get_split_ev(player, stand_evs, hit_evs, double_evs, counter, resplit_limit)
+    else:
+        split_ev = float("-inf")
+    player_ev = max(stand_ev, hit_ev, double_ev, split_ev)
+
+    if early:
+        if player.is_blackjack:
+            return False
+        else:
+            player_ev *= 1 - blackjack_prob
+            player_ev += blackjack_prob * blackjack_prob
+            player_ev -= blackjack_prob * (1 - blackjack_prob)
+    return player_ev < -0.5
 
 
 def dealer_rollout_exact(dealer_hand: Hand, counter: Counter) -> dict[int, float]:
@@ -302,7 +341,7 @@ def dealer_rollout_approximate(dealer_hand: Hand, counter: Counter) -> dict[int,
 
 def dealer_rollout(
     dealer_face: int, counter: Counter, no_blackjack: bool = True
-) -> dict[int, float]:
+) -> dict[int | str, float]:
     dealer_probs = defaultdict(float)
     for card in range(2, 12):
         hand = Hand([dealer_face, card])
@@ -462,7 +501,7 @@ if __name__ == "__main__":
         "resplit_aces": True,
         "hit_split_aces": True,
         "original_bet_only": True,
-        "surrender": Surrender.NONE,
+        "surrender": Surrender.LATE,
         "blackjack_payout": BlackJackPayout.THREE_TWO,
     }
 

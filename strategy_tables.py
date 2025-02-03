@@ -1,4 +1,4 @@
-from main import get_move, Move
+from main import get_move, Move, should_surrender
 from deck import Hand
 from counter import NoneCounter
 
@@ -28,6 +28,13 @@ def get_move_string(hand, dealer_face, counter, num_splits=0):
         return f"| {GREEN}P{ENDC} "
     else:
         return "| ?"
+
+def get_surrender_string(hand, dealer_face, counter, num_splits=3):
+    surrender = should_surrender(hand, dealer_face, counter, num_splits)
+    if surrender:
+        return f"| {BLUE}S{ENDC} "
+    else:
+        return f"| {RED}N{ENDC} "
 
 
 def basic_strategy_hard():
@@ -75,9 +82,23 @@ def basic_strategy_pair():
         string += "\n" + "-" * 45
         print(f"{card}: {string}")
 
+def surrender_strategy():
+    counter = NoneCounter(1)
+    print(get_dealer_face_string())
+    for hand_value in range(5, 22):
+        card1 = min(hand_value - 2, 10)
+        card2 = hand_value - card1
+        hand = Hand([card1, card2])
+        string = ""
+        for dealer_face in range(2, 12):
+            string += get_surrender_string(hand, dealer_face, counter, num_splits=3)
+        string += "\n" + "-" * 45
+        print(f"{hand_value:3.0f}: {string}")
 
 basic_strategy_hard()
 print("\n\n")
 basic_strategy_soft()
 print("\n\n")
 basic_strategy_pair()
+print("\n\n")
+surrender_strategy()

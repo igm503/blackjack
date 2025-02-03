@@ -44,7 +44,7 @@ class DoubleOn:
 
 
 class Hand:
-    double_after_split: bool = False
+    double_after_split: bool = True
     double_on: int = DoubleOn.ANY
     hit_split_aces: bool = False
     resplit_aces: bool = False
