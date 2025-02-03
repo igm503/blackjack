@@ -2,7 +2,7 @@ from main import get_move, Move
 from deck import Hand
 from counter import NoneCounter
 
-GREEN = "\033[92m"
+GREEN = "\033[91m"
 RED = "\033[95m"
 BLUE = "\033[94m"
 YELLOW = "\033[93m"

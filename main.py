@@ -51,11 +51,9 @@ def main(
     counter = PerfectCounter(num_decks)
 
     num_hands = 0
-    num_doubles = 0
     initial_bankroll = bankroll
 
     while bankroll > 0:
-        doubling = False
         if deck.must_shuffle:
             counter = PerfectCounter(num_decks)
             deck.shuffle()
@@ -99,63 +97,74 @@ def main(
             counter.count(dealer.cards[1])
             continue
 
-        hands = [player]
-        while not player.is_bust:
-            move = get_move(player, dealer_face, counter)
-            if move == Move.HIT:
-                new_card = deck.deal_card()
-                player.add(new_card)
-                counter.count(new_card)
-            elif move == Move.DOUBLE:
-                new_card = deck.deal_card()
-                print("DOUBLING")
-                doubling = True
-                player.double(new_card)
-                counter.count(new_card)
-                bankroll -= min_bet
-                num_doubles += 1
+        finished_hands = []
+        current_hands = [player]
+        while True:
+            if not current_hands:
                 break
-            elif move == Move.SPLIT:
-                pass
-
-            else:
-                break
+            for hand in current_hands[::-1]:
+                while not hand.is_bust:
+                    move = get_move(hand, dealer_face, counter)
+                    if move == Move.HIT:
+                        new_card = deck.deal_card()
+                        hand.add(new_card)
+                        counter.count(new_card)
+                    elif move == Move.DOUBLE:
+                        new_card = deck.deal_card()
+                        hand.double(new_card)
+                        counter.count(new_card)
+                        bankroll -= min_bet
+                        finished_hands.append(hand)
+                        current_hands.remove(hand)
+                        break
+                    elif move == Move.SPLIT:
+                        new_card_1 = deck.deal_card()
+                        new_card_2 = deck.deal_card()
+                        new_hands = hand.split(new_card_1, new_card_2)
+                        bankroll -= min_bet
+                        current_hands.remove(hand)
+                        current_hands.extend(new_hands)
+                        break
+                    else:
+                        finished_hands.append(hand)
+                        current_hands.remove(hand)
+                        break
+                if hand.is_bust:
+                    current_hands.remove(hand)
 
             # print("Player:", player)
 
-        if player.is_bust:
-            # print("Player Bust, Player Loses")
-            counter.count(dealer.cards[1])
+        counter.count(dealer.cards[1])
+        all_bust = all(hand.is_bust for hand in finished_hands)
+
+        if all_bust:
             continue
 
-        counter.count(dealer.cards[1])
         while dealer.must_hit:
             new_card = deck.deal_card()
             dealer.add(new_card)
             counter.count(new_card)
 
-        # print("Player:", player)
-        # print("Dealer:", dealer)
+        for hand in finished_hands:
+            if hand.is_bust:
+                # print("Player Bust, Player Loses")
+                continue
 
-        if dealer.is_bust or player.value > dealer.value:
-            # print("Player Wins")
-            bankroll += 2 * min_bet
-            if player.is_double:
+            # print("Player:", player)
+            # print("Dealer:", dealer)
+
+            if dealer.is_bust or hand.value > dealer.value:
+                # print("Player Wins")
                 bankroll += 2 * min_bet
-        elif player.value < dealer.value:
-            # print("Player Loses")
-            pass
-        else:
-            # print("Push")
-            bankroll += min_bet
-            if player.is_double:
+                if hand.is_double:
+                    bankroll += 2 * min_bet
+            elif hand.value == dealer.value:
+                # print("Push")
                 bankroll += min_bet
-
-        if doubling:
-            assert player.is_double
+                if player.is_double:
+                    bankroll += min_bet
 
     print(f"Played {num_hands} hands")
-    print(f"Number of doubles: {num_doubles}")
     print(f"Bet change per hand: {-initial_bankroll / (min_bet * num_hands)}")
 
 
@@ -385,115 +394,30 @@ def get_move(hand: Hand, dealer_face: int, counter: Counter, num_splits: int = 3
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Configure blackjack game rules")
 
-    # Number of decks
-    parser.add_argument(
-        "--decks",
-        type=int,
-        choices=[1, 2, 4, 5, 6, 8],
-        default=6,
-        help="Number of decks used in the game (1, 2, 4, 5, 6, or 8)",
-    )
-
-    # Dealer hit/stand on soft 17
-    parser.add_argument(
-        "--dealer-soft-17",
-        choices=["hits", "stands"],
-        default="stands",
-        help="Dealer hits or stands on soft 17",
-    )
-
-    # Double after split
-    parser.add_argument(
-        "--double-after-split", action="store_true", help="Allow doubling after split"
-    )
-
-    # Double down restrictions
-    parser.add_argument(
-        "--double-on",
-        choices=["any", "9-11", "10-11"],
-        default="any",
-        help="Restrictions on when player can double (any first two cards, 9-11 only, or 10-11 only)",
-    )
-
-    # Resplit limit
-    parser.add_argument(
-        "--resplit-limit",
-        type=int,
-        choices=[2, 3, 4],
-        default=3,
-        help="Maximum number of hands player can split to (2, 3, or 4)",
-    )
-
-    # Resplit aces
-    parser.add_argument("--resplit-aces", action="store_true", help="Allow resplitting of aces")
-
-    # Hit split aces
-    parser.add_argument("--hit-split-aces", action="store_true", help="Allow hitting split aces")
-
-    # Original bet only against dealer blackjack
-    parser.add_argument(
-        "--original-bet-only",
-        action="store_true",
-        help="Player loses only original bet against dealer blackjack",
-    )
-
-    # Surrender
-    parser.add_argument(
-        "--surrender",
-        choices=["none", "late", "early"],
-        default="none",
-        help="Surrender rules (none or late)",
-    )
-
-    # Blackjack payout
-    parser.add_argument(
-        "--blackjack-payout",
-        choices=["3:2", "6:5"],
-        default="3:2",
-        help="Blackjack payout ratio (3:2 or 6:5)",
-    )
-    args = parser.parse_args()
-    print("Game Rules Configuration:")
-    print(f"Number of decks: {args.decks}")
-    print(f"Dealer on soft 17: {args.dealer_soft_17}")
-    print(f"Double after split: {args.double_after_split}")
-    print(f"Double on: {args.double_on}")
-    print(f"Resplit limit: {args.resplit_limit}")
-    print(f"Resplit aces: {args.resplit_aces}")
-    print(f"Hit split aces: {args.hit_split_aces}")
-    print(f"Original bet only: {args.original_bet_only}")
-    print(f"Surrender: {args.surrender}")
-    print(f"Blackjack payout: {args.blackjack_payout}")
-
-    blackjack_payout = (
-        BlackJackPayout.THREE_TWO if args.blackjack_payout == "3:2" else BlackJackPayout.SIX_FIVE
-    )
-
-    if args.double_on == "any":
-        double_on = DoubleOn.ANY
-    elif args.double_on == "9-11":
-        double_on = DoubleOn.NINE_TO_ELEVEN
-    elif args.double_on == "10-11":
-        double_on = DoubleOn.TEN_TO_ELEVEN
-
-    if args.surrender == "none":
-        surrender = Surrender.NONE
-    elif args.surrender == "late":
-        surrender = Surrender.LATE
-    elif args.surrender == "early":
-        surrender = Surrender.EARLY
+    config = {
+        "decks": 8,
+        "dealer_hits_soft_17": True,
+        "double_after_split": True,
+        "double_on": DoubleOn.ANY,
+        "resplit_limit": 4,
+        "resplit_aces": True,
+        "hit_split_aces": True,
+        "original_bet_only": False,
+        "surrender": "none",
+        "blackjack_payout": BlackJackPayout.THREE_TWO,
+    }
 
     main(
         2,
         1000,
-        args.decks,
-        blackjack_payout,
-        args.dealer_soft_17 == "hits",
-        args.double_after_split,
-        double_on,
-        args.resplit_limit,
-        args.resplit_aces,
-        args.hit_split_aces,
-        args.original_bet_only,
-        surrender,
+        config["decks"],
+        config["blackjack_payout"],
+        config["dealer_hits_soft_17"],
+        config["double_after_split"],
+        config["double_on"],
+        config["resplit_limit"],
+        config["resplit_aces"],
+        config["hit_split_aces"],
+        config["original_bet_only"],
+        config["surrender"],
     )
