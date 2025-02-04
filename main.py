@@ -30,9 +30,16 @@ class Move:
     SPLIT = 3
 
 
+def reshuffle_deck(deck: Deck, counter: Counter):
+    print("Shuffling")
+    assert counter.total_remaining == len(deck.cards)
+    deck.shuffle()
+    counter.reset()
+
+
 def main(
     min_bet: int,
-    bankroll: int,
+    bankroll: float,
     num_decks: int,
     blackjack_payout: float,
     hit_soft_17: bool,
@@ -52,21 +59,31 @@ def main(
 
     num_hands = 0
     initial_bankroll = bankroll
+    running_ev = 0.0
 
     while bankroll > 0:
         if deck.must_shuffle:
-            counter = PerfectCounter(num_decks)
-            deck.shuffle()
-            print("Shuffling")
+            reshuffle_deck(deck, counter)
 
-        # hand_ev = get_hand_ev(counter, resplit_limit, blackjack_payout, surrender)
-        hand_ev = 0
-        print(f"Hand {num_hands}, Bankroll: {bankroll}, Hand EV: {hand_ev}")
+        current_bankroll = bankroll
+        hand_ev = get_hand_ev(counter, resplit_limit, blackjack_payout, surrender)
+        max_bet_multiple = 1 + resplit_limit
+        max_bet_multiple *= 2 if double_after_split else 1
+        max_bet_multiple = max(max_bet_multiple, 2)
+        bet = get_kelly_bet(hand_ev, current_bankroll, min_bet, factor=(1 / max_bet_multiple))
+        if bet == 0:
+            for i in range(6):
+                card = deck.deal_card()
+                assert card is not None
+                counter.count(card)
+            continue
+        print(f"Hand {num_hands}, Bankroll: {bankroll}, Hand EV: {hand_ev}, Bet: {bet}")
+        running_ev += hand_ev
 
         num_hands += 1
         num_splits = 0
 
-        bankroll -= min_bet
+        bankroll -= bet
 
         dealer = deck.deal_hand()
         player = deck.deal_hand()
@@ -81,7 +98,7 @@ def main(
                 player, dealer_face, counter, resplit_limit, early=False
             )
             if player_surrender:
-                bankroll += min_bet / 2
+                bankroll += bet / 2
                 counter.count(dealer.cards[1])
                 continue
 
@@ -91,7 +108,7 @@ def main(
                 pass
             if dealer.is_blackjack:
                 if player.is_blackjack:
-                    bankroll += min_bet
+                    bankroll += bet
                 else:
                     pass
                 counter.count(dealer.cards[1])
@@ -100,13 +117,12 @@ def main(
         if surrender == Surrender.LATE:
             player_surrender = should_surrender(player, dealer_face, counter, resplit_limit)
             if player_surrender:
-                bankroll += min_bet / 2
+                bankroll += bet / 2
                 counter.count(dealer.cards[1])
                 continue
 
         if player.is_blackjack:
-            assert int((1 + blackjack_payout) * min_bet) == (1 + blackjack_payout) * min_bet
-            bankroll += int((1 + blackjack_payout) * min_bet)
+            bankroll += int((1 + blackjack_payout) * bet)
             counter.count(dealer.cards[1])
             continue
 
@@ -128,21 +144,36 @@ def main(
                     )
                     if move == Move.HIT:
                         new_card = deck.deal_card()
+                        if new_card is None:
+                            reshuffle_deck(deck, counter)
+                            new_card = deck.deal_card()
+                        assert new_card is not None
                         hand.add(new_card)
                         counter.count(new_card)
                     elif move == Move.DOUBLE:
                         new_card = deck.deal_card()
+                        if new_card is None:
+                            reshuffle_deck(deck, counter)
+                            new_card = deck.deal_card()
+                        assert new_card is not None
                         hand.double(new_card)
                         counter.count(new_card)
-                        bankroll -= min_bet
+                        bankroll -= bet
                         finished_hands.append(hand)
                         current_hands.remove(hand)
                         break
                     elif move == Move.SPLIT:
                         new_card_1 = deck.deal_card()
                         new_card_2 = deck.deal_card()
+                        if new_card_1 is None or new_card_2 is None:
+                            reshuffle_deck(deck, counter)
+                            new_card_1 = deck.deal_card()
+                            new_card_2 = deck.deal_card()
+                        assert new_card_1 is not None and new_card_2 is not None
                         new_hands = hand.split(new_card_1, new_card_2)
-                        bankroll -= min_bet
+                        counter.count(new_card_1)
+                        counter.count(new_card_2)
+                        bankroll -= bet
                         current_hands.remove(hand)
                         current_hands.extend(new_hands)
                         num_splits += 1
@@ -160,6 +191,10 @@ def main(
 
         while dealer.must_hit:
             new_card = deck.deal_card()
+            if new_card is None:
+                reshuffle_deck(deck, counter)
+                new_card = deck.deal_card()
+            assert new_card is not None
             dealer.add(new_card)
             counter.count(new_card)
 
@@ -167,16 +202,17 @@ def main(
             assert not hand.is_bust
 
             if dealer.is_bust or hand.value > dealer.value:
-                bankroll += 2 * min_bet
+                bankroll += 2 * bet
                 if hand.is_double:
-                    bankroll += 2 * min_bet
+                    bankroll += 2 * bet
             elif hand.value == dealer.value:
-                bankroll += min_bet
+                bankroll += bet
                 if player.is_double:
-                    bankroll += min_bet
+                    bankroll += bet
 
+        # print(f"Bet change per hand: {(bankroll - initial_bankroll) / (min_bet * num_hands):.5f}")
+        # print(f"EV avg:              {running_ev / num_hands:.5f}")
     print(f"Played {num_hands} hands")
-    print(f"Bet change per hand: {-initial_bankroll / (min_bet * num_hands)}")
 
 
 def get_hand_ev(counter: Counter, max_splits: int, blackjack_payout: float, surrender: int):
@@ -510,7 +546,7 @@ def get_move(hand: Hand, dealer_face: int, counter: Counter, num_splits: int = 3
         return Move.STAND
 
 
-def get_kelly_bet(hand_ev: float, bankroll: float, min_bet: int) -> int:
+def get_kelly_bet(hand_ev: float, bankroll: float, min_bet: int, factor: float = 1) -> int:
     p = (hand_ev + 1) / 2
     ratio = p - ((1 - p) / 1)  # ignoring blackjack payout and other things like that``
     max_bet = int(bankroll * ratio)
@@ -522,15 +558,15 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Configure blackjack game rules")
 
     config = {
-        "decks": 8,
-        "dealer_hits_soft_17": True,
+        "decks": 3,
+        "dealer_hits_soft_17": False,
         "double_after_split": True,
         "double_on": DoubleOn.ANY,
         "resplit_limit": 3,
         "resplit_aces": True,
         "hit_split_aces": True,
         "original_bet_only": True,
-        "surrender": Surrender.NONE,
+        "surrender": Surrender.EARLY,
         "blackjack_payout": BlackJackPayout.THREE_TWO,
     }
 

@@ -14,6 +14,8 @@ class Deck:
         self.discard = []
 
     def deal_card(self):
+        if not self.cards:
+            return None
         card = self.cards.pop()
         self.discard.append(card)
         return card
