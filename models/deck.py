@@ -1,6 +1,8 @@
 from __future__ import annotations
 import random
 
+from config import GameConfig
+
 
 class Deck:
     def __init__(self, num_decks, penetration=0.9):
@@ -13,9 +15,10 @@ class Deck:
 
         self.discard = []
 
+    def can_deal(self):
+        return len(self.cards) > 0
+
     def deal_card(self):
-        if not self.cards:
-            return None
         card = self.cards.pop()
         self.discard.append(card)
         return card
@@ -53,12 +56,12 @@ class Hand:
     hit_soft_17: bool = True
 
     @classmethod
-    def set_rules(cls, hit_soft_17, double_after_split, double_on, hit_split_aces, resplit_aces):
-        cls.hit_soft_17 = hit_soft_17
-        cls.double_after_split = double_after_split
-        cls.double_on = double_on
-        cls.hit_split_aces = hit_split_aces
-        cls.resplit_aces = resplit_aces
+    def set_rules(cls, config: GameConfig):
+        cls.hit_soft_17 = config.dealer_hits_soft_17
+        cls.double_after_split = config.double_after_split
+        cls.double_on = config.double_on
+        cls.hit_split_aces = config.hit_split_aces
+        cls.resplit_aces = config.resplit_aces
 
     def __init__(self, cards: list[int], is_split=False):
         self.cards = cards

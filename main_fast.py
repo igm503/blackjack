@@ -2,8 +2,10 @@ from collections import defaultdict
 import argparse
 from copy import deepcopy
 
-from deck import Deck, DoubleOn, Hand
-from counter import Counter, NoneCounter, HighLowCounter, PerfectCounter
+from models.deck import Deck, DoubleOn, Hand
+from models.counter import Counter, NoneCounter, HighLowCounter, PerfectCounter
+from models.ev import HandEVs, ExpectedValues, DealerProbsTable, Move
+from config import GameConfig
 from timer import LoopTimer
 
 
@@ -24,40 +26,21 @@ class Surrender:
     LATE = 2
 
 
-class Move:
-    STAND = 0
-    HIT = 1
-    DOUBLE = 2
-    SPLIT = 3
-
-
 def reshuffle_deck(deck: Deck, counter: Counter):
     assert counter.total_remaining == len(deck.cards)
     deck.shuffle()
     counter.reset()
 
 
-def main(
-    min_bet: int,
-    bankroll: float,
-    num_decks: int,
-    blackjack_payout: float,
-    hit_soft_17: bool,
-    double_after_split: bool,
-    double_on: int,
-    resplit_limit: int,
-    resplit_aces: bool,
-    hit_split_aces: bool,
-    surrender: int,
-    always_play: bool,
-):
+def main(bankroll: float, config: GameConfig):
     timer = LoopTimer(1)
 
-    Hand.set_rules(hit_soft_17, double_after_split, double_on, hit_split_aces, resplit_aces)
-    deck = Deck(num_decks)
+    Hand.set_rules(config)
+
+    deck = Deck(config.num_decks)
     deck.shuffle()
 
-    counter = PerfectCounter(num_decks)
+    counter = PerfectCounter(config.num_decks)
 
     num_hands = 0
     running_ev = 0.0
@@ -70,44 +53,51 @@ def main(
 
         current_bankroll = bankroll
 
-        with timer.timing("hand_ev"):
-            hand_ev = get_hand_ev(counter, resplit_limit, blackjack_payout, surrender)
+        with timer.timing("dealer_probs"):
+            dealer_prob_table = get_dealer_prob_table(counter)
 
-        max_bet_multiple = get_max_bet(resplit_limit, double_after_split)
+        with timer.timing("hand_ev_table"):
+            hand_ev_table = get_hand_ev_table(dealer_prob_table, counter, config)
 
-        bet = get_kelly_bet(hand_ev, current_bankroll, min_bet, factor=(1 / max_bet_multiple))
+        with timer.timing("play_ev"):
+            play_ev = get_play_ev(hand_ev_table, counter, config)
 
-        if bet < min_bet:
-            if always_play:
-                bet = min_bet
+        max_bet_multiple = get_max_bet(config.resplit_limit, config.double_after_split)
+        kelly_factor = 1 / max_bet_multiple
+        bet = get_kelly_bet(play_ev, current_bankroll, config.min_bet, factor=kelly_factor)
+
+        if bet < config.min_bet:
+            if config.always_play:
+                bet = config.min_bet
             else:
                 for _ in range(6):
+                    if not deck.can_deal():
+                        reshuffle_deck(deck, counter)
                     card = deck.deal_card()
-                    assert card is not None
                     counter.count(card)
                 continue
 
-        # print(f"Hand {num_hands}, Bankroll: {bankroll}, Hand EV: {hand_ev}, Bet: {bet}")
-        running_ev += hand_ev
+        print(f"Hand {num_hands}, Bankroll: {bankroll}, Play EV: {play_ev}, Bet: {bet}")
+        running_ev += play_ev
 
         num_hands += 1
-        num_splits = 0
-
         bankroll -= bet
+
+        num_splits = 0
 
         dealer = deck.deal_hand()
         player = deck.deal_hand()
 
-        counter.count(player.cards)
-        counter.count(dealer.cards[0])
-
         dealer_face = dealer.cards[0]
 
-        if surrender == Surrender.EARLY:
+        counter.count(player.cards)
+        counter.count(dealer_face)
+
+        hand_evs = hand_ev_table[dealer_face]
+
+        if config.surrender == Surrender.EARLY:
             with timer.timing("surrender"):
-                player_surrender = should_surrender(
-                    player, dealer_face, counter, resplit_limit, early=False
-                )
+                player_surrender = should_surrender(player, hand_evs, dealer_face, counter, config)
 
             if player_surrender:
                 bankroll += bet / 2
@@ -129,9 +119,9 @@ def main(
                 timer.loop()
                 continue
 
-        if surrender == Surrender.LATE:
+        if config.surrender == Surrender.LATE:
             with timer.timing("surrender"):
-                player_surrender = should_surrender(player, dealer_face, counter, resplit_limit)
+                player_surrender = should_surrender(player, hand_evs, dealer_face, counter, config)
             if player_surrender:
                 bankroll += bet / 2
                 counter.count(dealer.cards[1])
@@ -139,7 +129,7 @@ def main(
                 continue
 
         if player.is_blackjack:
-            bankroll += int((1 + blackjack_payout) * bet)
+            bankroll += (1 + config.blackjack_payout) * bet
             counter.count(dealer.cards[1])
             timer.loop()
             continue
@@ -155,26 +145,15 @@ def main(
                     continue
                 while not hand.is_bust:
                     with timer.timing("get_move", separate_count=True):
-                        move = get_move(
-                            hand,
-                            dealer_face,
-                            counter,
-                            num_splits=resplit_limit - num_splits,
-                        )
+                        move = get_move(hand, hand_evs, config.resplit_limit - num_splits)
+                    if not deck.can_deal():
+                        reshuffle_deck(deck, counter)
                     if move == Move.HIT:
                         new_card = deck.deal_card()
-                        if new_card is None:
-                            reshuffle_deck(deck, counter)
-                            new_card = deck.deal_card()
-                        assert new_card is not None
                         hand.add(new_card)
                         counter.count(new_card)
                     elif move == Move.DOUBLE:
                         new_card = deck.deal_card()
-                        if new_card is None:
-                            reshuffle_deck(deck, counter)
-                            new_card = deck.deal_card()
-                        assert new_card is not None
                         hand.double(new_card)
                         counter.count(new_card)
                         bankroll -= bet
@@ -184,11 +163,6 @@ def main(
                     elif move == Move.SPLIT:
                         new_card_1 = deck.deal_card()
                         new_card_2 = deck.deal_card()
-                        if new_card_1 is None or new_card_2 is None:
-                            reshuffle_deck(deck, counter)
-                            new_card_1 = deck.deal_card()
-                            new_card_2 = deck.deal_card()
-                        assert new_card_1 is not None and new_card_2 is not None
                         new_hands = hand.split(new_card_1, new_card_2)
                         counter.count(new_card_1)
                         counter.count(new_card_2)
@@ -197,10 +171,12 @@ def main(
                         current_hands.extend(new_hands)
                         num_splits += 1
                         break
-                    else:
+                    elif move == Move.STAND:
                         finished_hands.append(hand)
                         current_hands.remove(hand)
                         break
+                    else:
+                        raise ValueError(f"Invalid move: {move}")
 
         counter.count(dealer.cards[1])
         all_bust = all(hand.is_bust for hand in finished_hands)
@@ -236,107 +212,160 @@ def main(
     print(f"Played {num_hands} hands")
 
 
-def get_hand_ev(counter: Counter, max_splits: int, blackjack_payout: float, surrender: int):
+def get_dealer_prob_table(counter: Counter) -> DealerProbsTable:
+    hard_states = [(v, False) for v in range(2, 22)]
+    soft_states = [(v, True) for v in range(11, 22)]
+    states = hard_states + soft_states
+    probs = DealerProbsTable()
+
+    for value, soft in states:
+        if value >= 17 and value <= 21:
+            probs.set(value, soft, {value: 1.0})
+
+    if Hand.hit_soft_17:
+        probs.delete(17, True)
+
+    need_processing = True
+    while need_processing:
+        need_processing = False
+
+        for value, soft in states:
+            if probs.contains(value, soft) or value > 21:
+                continue
+
+            next_states_ready = True
+            dealer_probs = defaultdict(float)
+
+            for card in range(2, 12):
+                card_prob = counter.probability(card)
+
+                new_value = value + card
+                new_soft = soft or card == 11
+
+                if new_value > 21 and new_soft:
+                    new_value -= 10
+                    new_soft = False
+
+                if new_value <= 21 and not probs.contains(new_value, new_soft):
+                    next_states_ready = False
+                    break
+
+                if new_value > 21:
+                    dealer_probs[0] += card_prob
+                    continue
+
+                next_probs = probs.get(new_value, new_soft)
+                for val, prob in next_probs.items():
+                    dealer_probs[val] += card_prob * prob
+
+            if next_states_ready:
+                probs.set(value, soft, dict(dealer_probs))
+            else:
+                need_processing = True
+
+    # fix for blackjack
+    probs_10 = probs.get(10, False)
+    blackjack_prob = counter.probability(11)
+    probs_10[21] -= blackjack_prob
+    for final_value in probs_10:
+        probs_10[final_value] /= 1 - blackjack_prob
+
+    probs_11 = probs.get(11, True)
+    blackjack_prob = counter.probability(10)
+    probs_11[21] -= blackjack_prob
+    for final_value in probs_11:
+        probs_11[final_value] /= 1 - blackjack_prob
+
+    return probs
+
+
+def get_hand_ev_table(
+    dealer_prob_table: DealerProbsTable, counter: Counter, config: GameConfig
+) -> dict[int, HandEVs]:
+    all_hand_evs = {}
+    for dealer_face in range(2, 12):
+        dealer_probs = dealer_prob_table.get_probs(dealer_face)
+        hand_evs = get_hand_evs(dealer_probs, counter)
+        for split_card in range(2, 12):
+            split_ev = get_split_ev(split_card, hand_evs, counter, config.resplit_limit)
+            hand_evs.split.set(split_card, split_ev)
+        all_hand_evs[dealer_face] = hand_evs
+    return all_hand_evs
+
+
+def get_play_ev(hand_ev_table: dict[int, HandEVs], counter: Counter, config: GameConfig):
     final_hand_ev = 0.0
     for dealer_face in range(2, 12):
-        face_prob = counter.probability(dealer_face)
-        counter.count(dealer_face)
-        dealer_probs = dealer_rollout(dealer_face, counter, no_blackjack=False)
-
-        blackjack_prob = dealer_probs["blackjack"]
-        for value in dealer_probs:
-            dealer_probs[value] /= 1 - blackjack_prob
-        del dealer_probs["blackjack"]
+        if dealer_face not in [10, 11]:
+            blackjack_prob = 0.0
+        elif dealer_face == 11:
+            blackjack_prob = counter.probability(10)
+        else:
+            blackjack_prob = counter.probability(11)
 
         hand_ev = 0.0
         prob_early_surrender = 0.0
         player_blackjack_prob = 0.0
-        stand_evs, hit_evs, double_evs = get_hand_evs(dealer_probs, counter)
+        hand_evs = hand_ev_table[dealer_face]
         for card in range(2, 12):
             card1_prob = counter.probability(card)
-            counter.count(card)
             for second_card in range(card, 12):
                 hand_prob = card1_prob * counter.probability(second_card)
-                counter.count(second_card)
-                hand = Hand([card, second_card])
-                if hand.can_split:
-                    split_ev = get_split_ev(
-                        hand, stand_evs, hit_evs, double_evs, counter, max_splits
-                    )
-                else:
-                    split_ev = float("-inf")
+                can_split = card == second_card
+                if not can_split:
                     hand_prob *= 2  # permutation variants are twice as likely
-                if hand.is_blackjack:
-                    hand_ev += hand_prob * blackjack_payout
+                if card + second_card == 21:
+                    hand_ev += hand_prob * config.blackjack_payout
                     player_blackjack_prob = hand_prob
-                    counter.uncount(second_card)
                     continue
-                value = hand.value
-                is_soft = hand.is_soft
-                stand_ev = stand_evs[(value, is_soft)]
-                hit_ev = hit_evs[(value, is_soft)]
-                double_ev = double_evs[(value, is_soft)]
-                ev = max(stand_ev, hit_ev, double_ev, split_ev)
-                if surrender == Surrender.EARLY:
+                value = card + second_card
+                if value == 22:
+                    value = 12
+                is_soft = card == 11 or second_card == 11
+                ev = hand_evs.get_max_ev(value, is_soft, can_split)
+                if config.surrender == Surrender.EARLY:
                     _ev = ev * (1 - blackjack_prob)
                     _ev -= blackjack_prob
                     if _ev < -0.5:
-                        ev = -0.5
                         prob_early_surrender += hand_prob
-                        counter.uncount(second_card)
                         continue
-                elif surrender == Surrender.LATE:
+                elif config.surrender == Surrender.LATE:
                     ev = max(ev, -0.5)
                 hand_ev += hand_prob * ev
-                counter.uncount(second_card)
-            counter.uncount(card)
 
         hand_ev *= 1 - blackjack_prob
         hand_ev += blackjack_prob * player_blackjack_prob
         hand_ev -= blackjack_prob * (1 - player_blackjack_prob)
 
-        if surrender == Surrender.EARLY:
+        if config.surrender == Surrender.EARLY:
             hand_ev *= 1 - prob_early_surrender
             hand_ev += prob_early_surrender * -0.5
 
-        final_hand_ev += hand_ev * face_prob
-        counter.uncount(dealer_face)
+        final_hand_ev += hand_ev * counter.probability(dealer_face)
 
     return final_hand_ev
 
 
 def should_surrender(
     player: Hand,
+    hand_evs: HandEVs,
     dealer_face: int,
     counter: Counter,
-    resplit_limit: int,
-    early: bool = False,
+    config: GameConfig,
 ):
-    if early:
-        dealer_probs = dealer_rollout(dealer_face, counter, no_blackjack=False)
-        blackjack_prob = dealer_probs["blackjack"]
-        del dealer_probs["blackjack"]
-        for value in dealer_probs:
-            dealer_probs[value] /= 1 - blackjack_prob
-    else:
-        dealer_probs = dealer_rollout(dealer_face, counter)
-        blackjack_prob = 0.0
+    blackjack_prob = 0.0
+    if config.surrender == Surrender.EARLY:
+        if dealer_face == 11:
+            blackjack_prob = counter.probability(10)
+        elif dealer_face == 10:
+            blackjack_prob = counter.probability(11)
 
-    stand_evs, hit_evs, double_evs = get_hand_evs(dealer_probs, counter)
-    stand_ev = stand_evs[(player.value, player.is_soft)]
-    hit_ev = hit_evs[(player.value, player.is_soft)]
-    double_ev = double_evs[(player.value, player.is_soft)]
-    if player.can_split and resplit_limit > 0:
-        split_ev = get_split_ev(player, stand_evs, hit_evs, double_evs, counter, resplit_limit)
-    else:
-        split_ev = float("-inf")
-    player_ev = max(stand_ev, hit_ev, double_ev, split_ev)
+    can_split = player.can_split and config.resplit_limit > 0
+    player_ev = hand_evs.get_max_ev(player.value, player.is_soft, can_split)
 
-    if early:
-        if player.is_blackjack:
-            return False
-        else:
-            player_ev *= 1 - blackjack_prob
+    if config.surrender == Surrender.EARLY:
+        player_ev *= 1 - blackjack_prob
+        if not player.is_blackjack:
             player_ev -= blackjack_prob
     return player_ev < -0.5
 
@@ -358,63 +387,6 @@ def dealer_rollout_exact(dealer_hand: Hand, counter: Counter) -> dict[int, float
         value = dealer_hand.value
         value = 0 if dealer_hand.is_bust else value
         return {value: 1.0}
-
-
-def dealer_rollout_approximate(dealer_hand: Hand, counter: Counter) -> dict[int, float]:
-    if not dealer_hand.must_hit:
-        return {dealer_hand.value: 1.0}
-
-    hard_states = [(v, False) for v in range(4, 22)]
-    soft_states = [(v, True) for v in range(12, 22)]
-    states = hard_states + soft_states
-    probs = {}
-
-    for value, soft in states:
-        if value >= 17 and value <= 21:
-            probs[(value, soft)] = {value: 1.0}
-
-    if dealer_hand.hit_soft_17:
-        del probs[(17, True)]
-
-    need_processing = True
-    while need_processing:
-        need_processing = False
-
-        for value, soft in states:
-            if (value, soft) in probs or value > 21:
-                continue
-
-            next_states_ready = True
-            dealer_probs = defaultdict(float)
-
-            for card in range(2, 12):
-                card_prob = counter.probability(card)
-
-                new_value = value + card
-                new_soft = soft or card == 11
-
-                if new_value > 21 and new_soft:
-                    new_value -= 10
-                    new_soft = False
-
-                if new_value <= 21 and (new_value, new_soft) not in probs:
-                    next_states_ready = False
-                    break
-
-                if new_value > 21:
-                    dealer_probs[0] += card_prob
-                    continue
-
-                next_probs = probs[(new_value, new_soft)]
-                for val, prob in next_probs.items():
-                    dealer_probs[val] += card_prob * prob
-
-            if next_states_ready:
-                probs[(value, soft)] = dict(dealer_probs)
-            else:
-                need_processing = True
-
-    return probs[(dealer_hand.value, dealer_hand.is_soft)]
 
 
 def dealer_rollout(
@@ -448,22 +420,22 @@ def dealer_rollout(
     return dealer_probs
 
 
-def get_hand_evs(dealer_probs: dict[int, float], counter: Counter):
+def get_hand_evs(dealer_probs: dict[int, float], counter: Counter) -> HandEVs:
     soft_states = [(v, True) for v in range(12, 22)]
     hard_states = [(v, False) for v in range(4, 22)]
     states = soft_states + hard_states
 
-    stand_evs = defaultdict(float)
+    stand_evs = ExpectedValues()
 
     for value, is_soft in states:
         for dealer_value, prob in dealer_probs.items():
             if value > dealer_value:
-                stand_evs[(value, is_soft)] += prob
+                stand_evs.add(value, is_soft, prob)
             elif value < dealer_value:
-                stand_evs[(value, is_soft)] -= prob
+                stand_evs.subtract(value, is_soft, prob)
 
-    hit_evs = {}
-    double_evs = {}
+    hit_evs = ExpectedValues()
+    double_evs = ExpectedValues()
 
     needs_processing = True
     while needs_processing:
@@ -486,34 +458,24 @@ def get_hand_evs(dealer_probs: dict[int, float], counter: Counter):
                     double_ev -= 2 * card_prob
                     continue
 
-                if (new_value, new_soft) not in hit_evs:
+                if not hit_evs.contains(new_value, new_soft):
                     needs_processing = True
                     next_states_ready = False
                     break
 
-                next_hit_ev = hit_evs[(new_value, new_soft)]
-                next_stand_ev = stand_evs[(new_value, new_soft)]
+                next_hit_ev = hit_evs.get(new_value, new_soft)
+                next_stand_ev = stand_evs.get(new_value, new_soft)
                 hit_ev += card_prob * max(next_hit_ev, next_stand_ev)
                 double_ev += 2 * card_prob * next_stand_ev
 
             if next_states_ready:
-                hit_evs[(value, is_soft)] = hit_ev
-                double_evs[(value, is_soft)] = double_ev
+                hit_evs.set(value, is_soft, hit_ev)
+                double_evs.set(value, is_soft, double_ev)
 
-    return stand_evs, hit_evs, double_evs
+    return HandEVs(stand_evs, hit_evs, double_evs)
 
 
-def get_split_ev(
-    hand: Hand,
-    stand_ev: dict[tuple[int, bool], float],
-    hit_ev: dict[tuple[int, bool], float],
-    double_ev: dict[tuple[int, bool], float],
-    counter: Counter,
-    num_splits: int,
-) -> float:
-    assert hand.can_split
-    split_card = hand.cards[0]
-
+def get_split_ev(split_card: int, hand_evs: HandEVs, counter: Counter, num_splits: int) -> float:
     terminal_split_ev = 0.0
     split_hand = Hand([split_card])
     split_card_ev = None
@@ -522,11 +484,11 @@ def get_split_ev(
         split_hand.add(card)
         value = split_hand.value
         is_soft = split_hand.is_soft
-        evs = [stand_ev[(value, is_soft)]]
-        if hand.hit_split_aces or split_card != 11:
-            evs.append(hit_ev[(value, is_soft)])
-            if hand.double_after_split:
-                evs.append(double_ev[(value, is_soft)])
+        evs = [hand_evs.stand.get(value, is_soft)]
+        if Hand.hit_split_aces or split_card != 11:
+            evs.append(hand_evs.hit.get(value, is_soft))
+            if Hand.double_after_split:
+                evs.append(hand_evs.double.get(value, is_soft))
         ev = max(evs)
         if card == split_card:
             split_card_ev = ev
@@ -534,7 +496,7 @@ def get_split_ev(
         split_hand.remove(card)
 
     split_ev = terminal_split_ev
-    if num_splits > 1 and (hand.resplit_aces or split_card != 11):
+    if num_splits > 1 and (Hand.resplit_aces or split_card != 11):
         num_splits -= 1
         resplit_prob = counter.probability(split_card)
         assert split_card_ev is not None
@@ -545,32 +507,29 @@ def get_split_ev(
     return split_ev
 
 
-def get_move(hand: Hand, dealer_face: int, counter: Counter, num_splits: int = 3) -> int:
+def get_move(hand: Hand, hand_evs: HandEVs, splits_remaining: int = 3) -> int:
     assert not hand.is_bust
 
-    dealer_probs = dealer_rollout(dealer_face, counter)
-    stand_evs, hit_evs, double_evs = get_hand_evs(dealer_probs, counter)
-    stand_ev = stand_evs[(hand.value, hand.is_soft)]
-    hit_ev = hit_evs[(hand.value, hand.is_soft)]
-    double_ev = double_evs[(hand.value, hand.is_soft)]
-    split_ev = float("-inf")
-    if hand.can_split and num_splits > 0:
-        split_ev = get_split_ev(hand, stand_evs, hit_evs, double_evs, counter, num_splits)
-    max_ev = max((stand_ev, hit_ev, double_ev, split_ev))
-    if hand.can_double and max_ev == double_ev:
-        return Move.DOUBLE
-    elif hand.can_hit and max_ev == hit_ev:
-        return Move.HIT
-    elif hand.can_split and max_ev == split_ev:
-        return Move.SPLIT
-    else:
-        return Move.STAND
+    can_split = hand.can_split and splits_remaining > 0
+    move_ranking = hand_evs.get_move_ranking(hand.value, hand.is_soft, can_split=can_split)
+    for move in move_ranking:
+        if move == Move.HIT and hand.can_hit:
+            return move
+        elif move == Move.DOUBLE and hand.can_double:
+            return move
+        elif move == Move.SPLIT and can_split:
+            return move
+        elif move == Move.STAND:
+            return move
+
+    raise Exception("No move found")
 
 
 def get_kelly_bet(hand_ev: float, bankroll: float, min_bet: int, factor: float = 1) -> int:
     p = (hand_ev + 1) / 2
     ratio = p - ((1 - p) / 1)  # ignoring blackjack payout and other things like that``
-    max_bet = int(bankroll * ratio * factor) 
+    max_bet = bankroll * ratio
+    max_bet = int(min(max_bet, bankroll * factor))
     bet = max_bet - max_bet % min_bet
     return max(bet, 0)
 
@@ -585,30 +544,18 @@ def get_max_bet(resplit_limit: int, double_after_split: bool) -> int:
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Configure blackjack game rules")
 
-    config = {
-        "decks": 3,
-        "dealer_hits_soft_17": False,
-        "double_after_split": True,
-        "double_on": DoubleOn.ANY,
-        "resplit_limit": 3,
-        "resplit_aces": True,
-        "hit_split_aces": True,
-        "surrender": Surrender.EARLY,
-        "blackjack_payout": BlackJackPayout.THREE_TWO,
-        "always_play": True,
-    }
-
-    main(
-        2,
-        1000,
-        config["decks"],
-        config["blackjack_payout"],
-        config["dealer_hits_soft_17"],
-        config["double_after_split"],
-        config["double_on"],
-        config["resplit_limit"],
-        config["resplit_aces"],
-        config["hit_split_aces"],
-        config["surrender"],
-        config["always_play"],
+    config = GameConfig(
+        min_bet=2,
+        num_decks=3,
+        dealer_hits_soft_17=False,
+        double_after_split=True,
+        double_on=DoubleOn.ANY,
+        resplit_limit=3,
+        resplit_aces=True,
+        hit_split_aces=True,
+        surrender=Surrender.EARLY,
+        blackjack_payout=BlackJackPayout.THREE_TWO,
+        always_play=False,
     )
+
+    main(1000, config)
