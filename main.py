@@ -4,6 +4,7 @@ from copy import deepcopy
 
 from deck import Deck, DoubleOn, Hand
 from counter import Counter, NoneCounter, HighLowCounter, PerfectCounter
+from timer import LoopTimer
 
 
 class CountingType:
@@ -31,7 +32,6 @@ class Move:
 
 
 def reshuffle_deck(deck: Deck, counter: Counter):
-    print("Shuffling")
     assert counter.total_remaining == len(deck.cards)
     deck.shuffle()
     counter.reset()
@@ -48,9 +48,11 @@ def main(
     resplit_limit: int,
     resplit_aces: bool,
     hit_split_aces: bool,
-    original_bet_only: bool,
     surrender: int,
+    always_play: bool,
 ):
+    timer = LoopTimer(1)
+
     Hand.set_rules(hit_soft_17, double_after_split, double_on, hit_split_aces, resplit_aces)
     deck = Deck(num_decks)
     deck.shuffle()
@@ -58,26 +60,34 @@ def main(
     counter = PerfectCounter(num_decks)
 
     num_hands = 0
-    initial_bankroll = bankroll
     running_ev = 0.0
+
+    timer.start()
 
     while bankroll > 0:
         if deck.must_shuffle:
             reshuffle_deck(deck, counter)
 
         current_bankroll = bankroll
-        hand_ev = get_hand_ev(counter, resplit_limit, blackjack_payout, surrender)
-        max_bet_multiple = 1 + resplit_limit
-        max_bet_multiple *= 2 if double_after_split else 1
-        max_bet_multiple = max(max_bet_multiple, 2)
+
+        with timer.timing("hand_ev"):
+            hand_ev = get_hand_ev(counter, resplit_limit, blackjack_payout, surrender)
+
+        max_bet_multiple = get_max_bet(resplit_limit, double_after_split)
+
         bet = get_kelly_bet(hand_ev, current_bankroll, min_bet, factor=(1 / max_bet_multiple))
+
         if bet == 0:
-            for i in range(6):
-                card = deck.deal_card()
-                assert card is not None
-                counter.count(card)
-            continue
-        print(f"Hand {num_hands}, Bankroll: {bankroll}, Hand EV: {hand_ev}, Bet: {bet}")
+            if always_play:
+                bet = min_bet
+            else:
+                for _ in range(6):
+                    card = deck.deal_card()
+                    assert card is not None
+                    counter.count(card)
+                continue
+
+        # print(f"Hand {num_hands}, Bankroll: {bankroll}, Hand EV: {hand_ev}, Bet: {bet}")
         running_ev += hand_ev
 
         num_hands += 1
@@ -94,36 +104,44 @@ def main(
         dealer_face = dealer.cards[0]
 
         if surrender == Surrender.EARLY:
-            player_surrender = should_surrender(
-                player, dealer_face, counter, resplit_limit, early=False
-            )
+            with timer.timing("surrender"):
+                player_surrender = should_surrender(
+                    player, dealer_face, counter, resplit_limit, early=False
+                )
+
             if player_surrender:
                 bankroll += bet / 2
                 counter.count(dealer.cards[1])
+                timer.loop()
                 continue
 
         if dealer_face in [10, 11]:
             if dealer_face == 11:
                 # do insurance
                 pass
+
             if dealer.is_blackjack:
                 if player.is_blackjack:
                     bankroll += bet
                 else:
                     pass
                 counter.count(dealer.cards[1])
+                timer.loop()
                 continue
 
         if surrender == Surrender.LATE:
-            player_surrender = should_surrender(player, dealer_face, counter, resplit_limit)
+            with timer.timing("surrender"):
+                player_surrender = should_surrender(player, dealer_face, counter, resplit_limit)
             if player_surrender:
                 bankroll += bet / 2
                 counter.count(dealer.cards[1])
+                timer.loop()
                 continue
 
         if player.is_blackjack:
             bankroll += int((1 + blackjack_payout) * bet)
             counter.count(dealer.cards[1])
+            timer.loop()
             continue
 
         finished_hands = []
@@ -136,12 +154,13 @@ def main(
                     current_hands.remove(hand)
                     continue
                 while not hand.is_bust:
-                    move = get_move(
-                        hand,
-                        dealer_face,
-                        counter,
-                        num_splits=resplit_limit - num_splits,
-                    )
+                    with timer.timing("get_move", separate_count=True):
+                        move = get_move(
+                            hand,
+                            dealer_face,
+                            counter,
+                            num_splits=resplit_limit - num_splits,
+                        )
                     if move == Move.HIT:
                         new_card = deck.deal_card()
                         if new_card is None:
@@ -209,6 +228,8 @@ def main(
                 bankroll += bet
                 if player.is_double:
                     bankroll += bet
+
+        timer.loop()
 
         # print(f"Bet change per hand: {(bankroll - initial_bankroll) / (min_bet * num_hands):.5f}")
         # print(f"EV avg:              {running_ev / num_hands:.5f}")
@@ -554,6 +575,13 @@ def get_kelly_bet(hand_ev: float, bankroll: float, min_bet: int, factor: float =
     return max(bet, 0)
 
 
+def get_max_bet(resplit_limit: int, double_after_split: bool) -> int:
+    max_bet_multiple = 1 + resplit_limit
+    max_bet_multiple *= 2 if double_after_split else 1
+    max_bet_multiple = max(max_bet_multiple, 2)
+    return max_bet_multiple
+
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Configure blackjack game rules")
 
@@ -565,9 +593,9 @@ if __name__ == "__main__":
         "resplit_limit": 3,
         "resplit_aces": True,
         "hit_split_aces": True,
-        "original_bet_only": True,
         "surrender": Surrender.EARLY,
         "blackjack_payout": BlackJackPayout.THREE_TWO,
+        "always_play": True,
     }
 
     main(
@@ -581,6 +609,6 @@ if __name__ == "__main__":
         config["resplit_limit"],
         config["resplit_aces"],
         config["hit_split_aces"],
-        config["original_bet_only"],
         config["surrender"],
+        config["always_play"],
     )
