@@ -54,6 +54,7 @@ def main(bankroll: float, config: GameConfig):
     while bankroll > 0:
         if deck.must_shuffle:
             reshuffle_deck(deck, counter)
+        counter.check()
 
         current_bankroll = bankroll
 
@@ -70,11 +71,10 @@ def main(bankroll: float, config: GameConfig):
             else:
                 for _ in range(6):
                     card = deck.deal_card()
-                    assert card is not None
                     counter.count(card)
                 continue
 
-        print(f"Hand {num_hands}, Bankroll: {bankroll}, Play EV: {play_ev}, Bet: {bet}")
+        # print(f"Hand {num_hands}, Bankroll: {bankroll}, Play EV: {play_ev}, Bet: {bet}")
         running_ev += play_ev
 
         num_hands += 1
@@ -229,6 +229,8 @@ def get_play_ev(counter: Counter, config: GameConfig):
     final_hand_ev = 0.0
     for dealer_face in range(2, 12):
         face_prob = counter.probability(dealer_face)
+        if face_prob == 0:
+            continue
         counter.count(dealer_face)
         dealer_probs = dealer_rollout(dealer_face, counter, no_blackjack=False)
 
@@ -243,9 +245,13 @@ def get_play_ev(counter: Counter, config: GameConfig):
         stand_evs, hit_evs, double_evs = get_hand_evs(dealer_probs, counter)
         for card in range(2, 12):
             card1_prob = counter.probability(card)
+            if card1_prob == 0:
+                continue
             counter.count(card)
             for second_card in range(card, 12):
                 hand_prob = card1_prob * counter.probability(second_card)
+                if hand_prob == 0:
+                    continue
                 counter.count(second_card)
                 hand = Hand([card, second_card])
                 if hand.can_split:
@@ -299,40 +305,35 @@ def get_play_ev(counter: Counter, config: GameConfig):
     return final_hand_ev
 
 
-def should_surrender(
-    player: Hand,
-    dealer_face: int,
-    counter: Counter,
-    resplit_limit: int,
-    early: bool = False,
-):
-    if early:
-        dealer_probs = dealer_rollout(dealer_face, counter, no_blackjack=False)
-        blackjack_prob = dealer_probs["blackjack"]
-        del dealer_probs["blackjack"]
-        for value in dealer_probs:
-            dealer_probs[value] /= 1 - blackjack_prob
-    else:
-        dealer_probs = dealer_rollout(dealer_face, counter)
-        blackjack_prob = 0.0
+def dealer_rollout(
+    dealer_face: int, counter: Counter, no_blackjack: bool = True
+) -> dict[int | str, float]:
+    dealer_probs = defaultdict(float)
+    for card in range(2, 12):
+        hand = Hand([dealer_face, card])
+        if hand.is_blackjack:
+            if not no_blackjack:
+                card_prob = counter.probability(card)
+                dealer_probs["blackjack"] += card_prob
+            continue
 
-    stand_evs, hit_evs, double_evs = get_hand_evs(dealer_probs, counter)
-    stand_ev = stand_evs[(player.value, player.is_soft)]
-    hit_ev = hit_evs[(player.value, player.is_soft)]
-    double_ev = double_evs[(player.value, player.is_soft)]
-    if player.can_split and resplit_limit > 0:
-        split_ev = get_split_ev(player, stand_evs, hit_evs, double_evs, counter, resplit_limit)
-    else:
-        split_ev = float("-inf")
-    player_ev = max(stand_ev, hit_ev, double_ev, split_ev)
+        card_prob = counter.probability(card)
+        probs = dealer_rollout_approximate(hand, counter)
+        for value, prob in probs.items():
+            dealer_probs[value] += card_prob * prob
 
-    if early:
-        if player.is_blackjack:
-            return False
+    if not no_blackjack or dealer_face not in [10, 11]:
+        assert sum(dealer_probs.values()) - 1 < 1e-6, f"{sum(dealer_probs.values())}"
+    else:
+        if dealer_face == 11:
+            missing_prob = counter.probability(10)
         else:
-            player_ev *= 1 - blackjack_prob
-            player_ev -= blackjack_prob
-    return player_ev < -0.5
+            missing_prob = counter.probability(11)
+        norm_factor = 1 / (1 - missing_prob)
+        for value, prob in dealer_probs.items():
+            dealer_probs[value] = norm_factor * prob
+        assert sum(dealer_probs.values()) - 1 < 1e-6
+    return dealer_probs
 
 
 def dealer_rollout_exact(dealer_hand: Hand, counter: Counter) -> dict[int, float]:
@@ -340,6 +341,8 @@ def dealer_rollout_exact(dealer_hand: Hand, counter: Counter) -> dict[int, float
         dealer_probs = defaultdict(float)
         for card in range(2, 12):
             card_prob = counter.probability(card)
+            if card_prob == 0:
+                continue
             temp_counter = deepcopy(counter)
             temp_counter.count(card)
             temp_dealer_hand = deepcopy(dealer_hand)
@@ -409,37 +412,6 @@ def dealer_rollout_approximate(dealer_hand: Hand, counter: Counter) -> dict[int,
                 need_processing = True
 
     return probs[(dealer_hand.value, dealer_hand.is_soft)]
-
-
-def dealer_rollout(
-    dealer_face: int, counter: Counter, no_blackjack: bool = True
-) -> dict[int | str, float]:
-    dealer_probs = defaultdict(float)
-    for card in range(2, 12):
-        hand = Hand([dealer_face, card])
-        if hand.is_blackjack:
-            if not no_blackjack:
-                card_prob = counter.probability(card)
-                dealer_probs["blackjack"] += card_prob
-            continue
-
-        card_prob = counter.probability(card)
-        probs = dealer_rollout_approximate(hand, counter)
-        for value, prob in probs.items():
-            dealer_probs[value] += card_prob * prob
-
-    if not no_blackjack or dealer_face not in [10, 11]:
-        assert sum(dealer_probs.values()) - 1 < 1e-6, f"{sum(dealer_probs.values())}"
-    else:
-        if dealer_face == 11:
-            missing_prob = counter.probability(10)
-        else:
-            missing_prob = counter.probability(11)
-        norm_factor = 1 / (1 - missing_prob)
-        for value, prob in dealer_probs.items():
-            dealer_probs[value] = norm_factor * prob
-        assert sum(dealer_probs.values()) - 1 < 1e-6
-    return dealer_probs
 
 
 def get_hand_evs(dealer_probs: dict[int, float], counter: Counter):
@@ -537,7 +509,7 @@ def get_split_ev(
         and (Hand.resplit_aces or split_card != 11)
         and terminal_split_ev > split_card_ev
     ):
-        # if multiple splits are allowed and splitting is desirable, 
+        # if multiple splits are allowed and splitting is desirable,
         # the first split's EV should be higher than the second split's EV
         # this won't affect later splitting decisions since it will only
         # affect the play EV since we only increase the split ev if it
@@ -565,6 +537,58 @@ def get_split_ev(
     return split_ev
 
 
+def get_kelly_bet(hand_ev: float, bankroll: float, min_bet: int, factor: float = 1) -> int:
+    p = (hand_ev + 1) / 2
+    ratio = p - ((1 - p) / 1)  # ignoring blackjack payout and other things like that``
+    max_bet = bankroll * ratio
+    max_bet = int(min(max_bet, bankroll * factor))
+    bet = max_bet - max_bet % min_bet
+    return max(bet, 0)
+
+
+def get_max_bet(resplit_limit: int, double_after_split: bool) -> int:
+    max_bet_multiple = 1 + resplit_limit
+    max_bet_multiple *= 2 if double_after_split else 1
+    max_bet_multiple = max(max_bet_multiple, 2)
+    return max_bet_multiple
+
+
+def should_surrender(
+    player: Hand,
+    dealer_face: int,
+    counter: Counter,
+    resplit_limit: int,
+    early: bool = False,
+):
+    if early:
+        dealer_probs = dealer_rollout(dealer_face, counter, no_blackjack=False)
+        blackjack_prob = dealer_probs["blackjack"]
+        del dealer_probs["blackjack"]
+        for value in dealer_probs:
+            dealer_probs[value] /= 1 - blackjack_prob
+    else:
+        dealer_probs = dealer_rollout(dealer_face, counter)
+        blackjack_prob = 0.0
+
+    stand_evs, hit_evs, double_evs = get_hand_evs(dealer_probs, counter)
+    stand_ev = stand_evs[(player.value, player.is_soft)]
+    hit_ev = hit_evs[(player.value, player.is_soft)]
+    double_ev = double_evs[(player.value, player.is_soft)]
+    if player.can_split and resplit_limit > 0:
+        split_ev = get_split_ev(player, stand_evs, hit_evs, double_evs, counter, resplit_limit)
+    else:
+        split_ev = float("-inf")
+    player_ev = max(stand_ev, hit_ev, double_ev, split_ev)
+
+    if early:
+        if player.is_blackjack:
+            return False
+        else:
+            player_ev *= 1 - blackjack_prob
+            player_ev -= blackjack_prob
+    return player_ev < -0.5
+
+
 def get_move(hand: Hand, dealer_face: int, counter: Counter, num_splits: int = 3) -> int:
     assert not hand.is_bust
 
@@ -585,22 +609,6 @@ def get_move(hand: Hand, dealer_face: int, counter: Counter, num_splits: int = 3
         return Move.SPLIT
     else:
         return Move.STAND
-
-
-def get_kelly_bet(hand_ev: float, bankroll: float, min_bet: int, factor: float = 1) -> int:
-    p = (hand_ev + 1) / 2
-    ratio = p - ((1 - p) / 1)  # ignoring blackjack payout and other things like that``
-    max_bet = bankroll * ratio
-    max_bet = int(min(max_bet, bankroll * factor))
-    bet = max_bet - max_bet % min_bet
-    return max(bet, 0)
-
-
-def get_max_bet(resplit_limit: int, double_after_split: bool) -> int:
-    max_bet_multiple = 1 + resplit_limit
-    max_bet_multiple *= 2 if double_after_split else 1
-    max_bet_multiple = max(max_bet_multiple, 2)
-    return max_bet_multiple
 
 
 if __name__ == "__main__":

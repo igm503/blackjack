@@ -40,13 +40,18 @@ class PerfectCounter(Counter):
         self.total_remaining += 1
 
     def probability(self, card: int) -> float:
-        return self.remaining[card] / self.total_remaining
+        return max(self.remaining[card] / self.total_remaining, 0)
 
     def reset(self):
         self.remaining = {i: self.num_decks * 4 for i in range(2, 10)}
         self.remaining[10] = self.num_decks * 16  # 10, J, Q, K
         self.remaining[11] = self.num_decks * 4  # A
         self.total_remaining = self.num_decks * 52
+
+    def check(self):
+        for card in range(2, 12):
+            if self.remaining[card] < 0:
+                raise ValueError(f"Negative remaining: {self.remaining[card]}")
 
 
 class HighLowCounter(Counter):
@@ -84,11 +89,16 @@ class HighLowCounter(Counter):
         else:
             prob = naive_num_remaining / self.total_remaining
 
-        return prob
+        return max(prob, 0)
 
     def reset(self):
         self.running_count = 0
         self.total_remaining = self.num_decks * 52
+
+    def check(self):
+        naive_num_remaining = self.total_remaining / 13
+        if abs(self.running_count) / 2 > 5 * naive_num_remaining:
+            raise ValueError(f"Running count too large: {self.running_count}")
 
 
 class NoneCounter(Counter):
@@ -107,3 +117,6 @@ class NoneCounter(Counter):
 
     def reset(self):
         self.total_remaining = self.num_decks * 52
+
+    def check(self):
+        pass
