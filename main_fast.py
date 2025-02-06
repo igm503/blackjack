@@ -492,6 +492,11 @@ def get_hand_evs(dealer_probs: dict[int, float], counter: Counter, resplit_limit
                     resplit_prob = counter.probability(value)
                     terminal_split_ev = split_ev + 2 * resplit_prob * split_card_ev
                     if can_resplit and terminal_split_ev > split_card_ev:
+                        # if multiple splits are allowed and splitting is desirable,
+                        # the first split's EV should be higher than the second split's EV
+                        # this won't affect later splitting decisions since it will only
+                        # affect the play EV since we only increase the split ev if it
+                        # is higher than the non-split EV anyway
                         num_splits = resplit_limit
                         split_level = 1
                         while num_splits > split_level:
@@ -518,44 +523,12 @@ def get_hand_evs(dealer_probs: dict[int, float], counter: Counter, resplit_limit
                 double_evs.set(value, is_soft, double_ev)
                 if can_split:
                     if value == 11:
-                        pair_value = 12 
+                        pair_value = 12
                     else:
                         pair_value = 2 * value
                     split_evs.set(pair_value, is_soft, split_ev)
 
     return HandEVs(stand_evs, hit_evs, double_evs, split_evs)
-
-
-def get_split_ev(split_card: int, hand_evs: HandEVs, counter: Counter, num_splits: int) -> float:
-    terminal_split_ev = 0.0
-    split_hand = Hand([split_card])
-    split_card_ev = None
-    for card in range(2, 12):
-        card_prob = counter.probability(card)
-        split_hand.add(card)
-        value = split_hand.value
-        is_soft = split_hand.is_soft
-        evs = [hand_evs.stand.get(value, is_soft)]
-        if Hand.hit_split_aces or split_card != 11:
-            evs.append(hand_evs.hit.get(value, is_soft))
-            if Hand.double_after_split:
-                evs.append(hand_evs.double.get(value, is_soft))
-        ev = max(evs)
-        if card == split_card:
-            split_card_ev = ev
-        terminal_split_ev += 2 * card_prob * ev
-        split_hand.remove(card)
-
-    split_ev = terminal_split_ev
-    if num_splits > 1 and (Hand.resplit_aces or split_card != 11):
-        num_splits -= 1
-        resplit_prob = counter.probability(split_card)
-        assert split_card_ev is not None
-        if split_ev > split_card_ev:
-            split_ev -= (2 - num_splits) * resplit_prob * split_card_ev
-            split_ev += (num_splits) * resplit_prob * split_ev
-
-    return split_ev
 
 
 def get_move(hand: Hand, hand_evs: HandEVs, splits_remaining: int = 3) -> int:
