@@ -39,22 +39,6 @@ class ExpectedValues:
         return (hand_value, is_soft) in self.evs
 
 
-class SplitEVs:
-    def __init__(self):
-        self.evs = {}
-
-    def get(self, split_card: int):
-        return self.evs[split_card]
-
-    def get_ev(self, hand: Hand):
-        if not hand.can_split:
-            return float("-inf")
-        return self.get(hand.cards[0])
-
-    def set(self, split_card: int, ev: float):
-        self.evs[split_card] = ev
-
-
 class DealerProbsTable:
     def __init__(self):
         self.probs = {}
@@ -81,7 +65,7 @@ class HandEVs:
     stand: ExpectedValues
     hit: ExpectedValues
     double: ExpectedValues
-    split: SplitEVs = SplitEVs()
+    split: ExpectedValues
 
     def get_max_ev(self, value: int, is_soft: bool, can_split: bool = True):
         evs = [
@@ -90,8 +74,7 @@ class HandEVs:
             self.double.get(value, is_soft),
         ]
         if can_split:
-            assert value % 2 == 0
-            evs.append(self.split.get(value // 2))
+            evs.append(self.split.get(value, is_soft))
         return max(evs)
 
     def get_move_ranking(self, value: int, is_soft: bool, can_split: bool = True):
@@ -99,8 +82,7 @@ class HandEVs:
         hit_ev = self.hit.get(value, is_soft)
         double_ev = self.double.get(value, is_soft)
         if can_split:
-            assert value % 2 == 0
-            split_ev = self.split.get(value // 2)
+            split_ev = self.split.get(value, is_soft)
         else:
             split_ev = float("-inf")
 

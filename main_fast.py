@@ -284,10 +284,7 @@ def get_hand_ev_table(
     all_hand_evs = {}
     for dealer_face in range(2, 12):
         dealer_probs = dealer_prob_table.get_probs(dealer_face)
-        hand_evs = get_hand_evs(dealer_probs, counter)
-        for split_card in range(2, 12):
-            split_ev = get_split_ev(split_card, hand_evs, counter, config.resplit_limit)
-            hand_evs.split.set(split_card, split_ev)
+        hand_evs = get_hand_evs(dealer_probs, counter, config.resplit_limit)
         all_hand_evs[dealer_face] = hand_evs
     return all_hand_evs
 
@@ -419,9 +416,9 @@ def dealer_rollout(
     return dealer_probs
 
 
-def get_hand_evs(dealer_probs: dict[int, float], counter: Counter) -> HandEVs:
-    soft_states = [(v, True) for v in range(12, 22)]
-    hard_states = [(v, False) for v in range(4, 22)]
+def get_hand_evs(dealer_probs: dict[int, float], counter: Counter, resplit_limit: int) -> HandEVs:
+    soft_states = [(v, True) for v in range(11, 22)]
+    hard_states = [(v, False) for v in range(2, 22)]
     states = soft_states + hard_states
 
     stand_evs = ExpectedValues()
@@ -435,13 +432,20 @@ def get_hand_evs(dealer_probs: dict[int, float], counter: Counter) -> HandEVs:
 
     hit_evs = ExpectedValues()
     double_evs = ExpectedValues()
+    split_evs = ExpectedValues()
 
     needs_processing = True
     while needs_processing:
         needs_processing = False
         for value, is_soft in states:
+            can_split = value < 11 or value == 11 and is_soft
+            can_resplit = can_split and (Hand.resplit_aces or value != 11) and resplit_limit > 1
+            can_split_hit = can_split and (Hand.hit_split_aces or value != 11)
+            can_split_double = can_split and (Hand.double_after_split or value != 11)
             hit_ev = 0
             double_ev = 0
+            split_ev = 0
+            split_card_ev = None
             next_states_ready = True
             for card in range(2, 12):
                 card_prob = counter.probability(card)
@@ -466,12 +470,60 @@ def get_hand_evs(dealer_probs: dict[int, float], counter: Counter) -> HandEVs:
                 next_stand_ev = stand_evs.get(new_value, new_soft)
                 hit_ev += card_prob * max(next_hit_ev, next_stand_ev)
                 double_ev += 2 * card_prob * next_stand_ev
+                if can_split:
+                    if not can_split_hit:
+                        max_ev = next_stand_ev
+                    elif not can_split_double:
+                        max_ev = max(next_hit_ev, next_stand_ev)
+                    else:
+                        max_ev = max(
+                            next_hit_ev,
+                            next_stand_ev,
+                            double_evs.get(new_value, new_soft),
+                        )
+                    if card == value:
+                        split_card_ev = max_ev
+                    else:
+                        split_ev += 2 * card_prob * max_ev
 
             if next_states_ready:
+                if can_split:
+                    assert split_card_ev is not None
+                    resplit_prob = counter.probability(value)
+                    terminal_split_ev = split_ev + 2 * resplit_prob * split_card_ev
+                    if can_resplit and terminal_split_ev > split_card_ev:
+                        num_splits = resplit_limit
+                        split_level = 1
+                        while num_splits > split_level:
+                            num_splits -= split_level
+                            split_level *= 2
+                        top_level_remaining = split_level - num_splits
+                        split_values = [terminal_split_ev] * num_splits
+                        split_values += [split_card_ev] * top_level_remaining
+                        while len(split_values) > 1:
+                            new_split_values = []
+                            for i in range(0, len(split_values), 2):
+                                new_split_values.append(
+                                    split_ev
+                                    + resplit_prob * (split_values[i] + split_values[i + 1])
+                                )
+                            split_values = new_split_values
+                        split_ev = split_values[0]
+                        assert split_ev >= terminal_split_ev
+                    else:
+                        split_ev += 2 * counter.probability(value) * split_card_ev
+                else:
+                    split_ev = float("-inf")
                 hit_evs.set(value, is_soft, hit_ev)
                 double_evs.set(value, is_soft, double_ev)
+                if can_split:
+                    if value == 11:
+                        pair_value = 12 
+                    else:
+                        pair_value = 2 * value
+                    split_evs.set(pair_value, is_soft, split_ev)
 
-    return HandEVs(stand_evs, hit_evs, double_evs)
+    return HandEVs(stand_evs, hit_evs, double_evs, split_evs)
 
 
 def get_split_ev(split_card: int, hand_evs: HandEVs, counter: Counter, num_splits: int) -> float:
