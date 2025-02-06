@@ -503,12 +503,12 @@ def get_split_ev(
     hit_ev: dict[tuple[int, bool], float],
     double_ev: dict[tuple[int, bool], float],
     counter: Counter,
-    num_splits: int,
+    split_limit: int,
 ) -> float:
     assert hand.can_split
     split_card = hand.cards[0]
 
-    terminal_split_ev = 0.0
+    split_ev = 0.0
     split_hand = Hand([split_card])
     split_card_ev = None
     for card in range(2, 12):
@@ -524,17 +524,43 @@ def get_split_ev(
         ev = max(evs)
         if card == split_card:
             split_card_ev = ev
-        terminal_split_ev += 2 * card_prob * ev
+        else:
+            split_ev += 2 * card_prob * ev
         split_hand.remove(card)
 
-    split_ev = terminal_split_ev
-    if num_splits > 1 and (hand.resplit_aces or split_card != 11):
-        num_splits -= 1
-        resplit_prob = counter.probability(split_card)
-        assert split_card_ev is not None
-        if split_ev > split_card_ev:
-            split_ev -= (2 - num_splits) * resplit_prob * split_card_ev
-            split_ev += (num_splits) * resplit_prob * split_ev
+    assert split_card_ev is not None
+    resplit_prob = counter.probability(split_card)
+    terminal_split_ev = split_ev + 2 * resplit_prob * split_card_ev
+
+    if (
+        split_limit > 1
+        and (Hand.resplit_aces or split_card != 11)
+        and terminal_split_ev > split_card_ev
+    ):
+        # if multiple splits are allowed and splitting is desirable, 
+        # the first split's EV should be higher than the second split's EV
+        # this won't affect later splitting decisions since it will only
+        # affect the play EV since we only increase the split ev if it
+        # is higher than the non-split EV anyway
+        num_splits = split_limit
+        split_level = 1
+        while num_splits > split_level:
+            num_splits -= split_level
+            split_level *= 2
+        top_level_remaining = split_level - num_splits
+        split_values = [terminal_split_ev] * num_splits
+        split_values += [split_card_ev] * top_level_remaining
+        while len(split_values) > 1:
+            new_split_values = []
+            for i in range(0, len(split_values), 2):
+                new_split_values.append(
+                    split_ev + resplit_prob * (split_values[i] + split_values[i + 1])
+                )
+            split_values = new_split_values
+        split_ev = split_values[0]
+        assert split_ev >= terminal_split_ev, f"{split_ev: .4f}, {terminal_split_ev: .4f}"
+    else:
+        split_ev = terminal_split_ev
 
     return split_ev
 
