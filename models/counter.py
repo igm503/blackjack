@@ -74,15 +74,15 @@ class HighLowCounter(Counter):
         self.total_remaining += 1
 
     def probability(self, card: int) -> float:
-        naive_num_remaining = self.total_remaining * (5 / 13)
+        naive_num_remaining = self.total_remaining / 13
         if card < 7:
-            prob = (naive_num_remaining - self.running_count / 2) / (5 * self.total_remaining)
+            prob = (5 * naive_num_remaining - self.running_count / 2) / (5 * self.total_remaining)
         elif card > 9:
-            prob = (naive_num_remaining - self.running_count / 2) / (5 * self.total_remaining)
+            prob = (5 * naive_num_remaining + self.running_count / 2) / (5 * self.total_remaining)
             if card == 10:
                 prob *= 4
         else:
-            prob = naive_num_remaining / (3 * self.total_remaining)
+            prob = naive_num_remaining / self.total_remaining
 
         return prob
 

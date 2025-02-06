@@ -1,5 +1,4 @@
 from collections import defaultdict
-import argparse
 from copy import deepcopy
 
 from models.deck import Deck, DoubleOn, Hand
@@ -53,13 +52,13 @@ def main(bankroll: float, config: GameConfig):
 
         current_bankroll = bankroll
 
-        with timer.timing("dealer_probs"):
+        with timer.timing("dealer_probs", separate_count=True):
             dealer_prob_table = get_dealer_prob_table(counter)
 
-        with timer.timing("hand_ev_table"):
+        with timer.timing("hand_ev_table", separate_count=True):
             hand_ev_table = get_hand_ev_table(dealer_prob_table, counter, config)
 
-        with timer.timing("play_ev"):
+        with timer.timing("play_ev", separate_count=True):
             play_ev = get_play_ev(hand_ev_table, counter, config)
 
         max_bet_multiple = get_max_bet(config.resplit_limit, config.double_after_split)
@@ -542,8 +541,6 @@ def get_max_bet(resplit_limit: int, double_after_split: bool) -> int:
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Configure blackjack game rules")
-
     config = GameConfig(
         min_bet=2,
         num_decks=3,
@@ -555,7 +552,7 @@ if __name__ == "__main__":
         hit_split_aces=True,
         surrender=Surrender.EARLY,
         blackjack_payout=BlackJackPayout.THREE_TWO,
-        always_play=False,
+        always_play=True,
     )
 
     main(1000, config)
