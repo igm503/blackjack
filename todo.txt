@@ -1,4 +1,3 @@
--add splitting
 -add insurance
--add surrender
--hit decision needs to take into account rollout (hits that get twos on low hands are underrated since they lose unless dealer busts)
+
+- is the probability of a card being drawn four cards in the future different from it's probability being drawn now?

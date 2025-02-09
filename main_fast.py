@@ -1,5 +1,4 @@
 from collections import defaultdict
-from copy import deepcopy
 
 from models.deck import Deck, DoubleOn, Hand
 from models.counter import Counter, NoneCounter, HighLowCounter, PerfectCounter
@@ -49,7 +48,6 @@ def main(bankroll: float, config: GameConfig):
     while bankroll > 0:
         if deck.must_shuffle:
             reshuffle_deck(deck, counter)
-        counter.check()
 
         current_bankroll = bankroll
 

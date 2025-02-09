@@ -5,6 +5,7 @@ from models.deck import Deck, DoubleOn, Hand
 from models.counter import Counter, NoneCounter, HighLowCounter, PerfectCounter
 from timer import LoopTimer
 from config import GameConfig
+import main_fast
 
 
 class CountingType:
@@ -54,9 +55,12 @@ def main(bankroll: float, config: GameConfig):
     while bankroll > 0:
         if deck.must_shuffle:
             reshuffle_deck(deck, counter)
-        counter.check()
 
         current_bankroll = bankroll
+
+        dealer_prob_table = main_fast.get_dealer_prob_table(counter)
+        hand_ev_table = main_fast.get_hand_ev_table(dealer_prob_table, counter, config)
+        fast_play_ev = main_fast.get_play_ev(hand_ev_table, counter, config)
 
         with timer.timing("play_ev"):
             play_ev = get_play_ev(counter, config)
@@ -74,7 +78,9 @@ def main(bankroll: float, config: GameConfig):
                     counter.count(card)
                 continue
 
-        # print(f"Hand {num_hands}, Bankroll: {bankroll}, Play EV: {play_ev}, Bet: {bet}")
+        print(
+            f"Hand {num_hands}, Bankroll: {bankroll}, Play EV: {play_ev: .3f}, Fast Play EV: {fast_play_ev: .3f}, Bet: {bet}"
+        )
         running_ev += play_ev
 
         num_hands += 1
@@ -318,7 +324,7 @@ def dealer_rollout(
             continue
 
         card_prob = counter.probability(card)
-        probs = dealer_rollout_approximate(hand, counter)
+        probs = dealer_rollout_exact(hand, counter)
         for value, prob in probs.items():
             dealer_probs[value] += card_prob * prob
 
@@ -343,11 +349,11 @@ def dealer_rollout_exact(dealer_hand: Hand, counter: Counter) -> dict[int, float
             card_prob = counter.probability(card)
             if card_prob == 0:
                 continue
-            temp_counter = deepcopy(counter)
-            temp_counter.count(card)
+            counter.count(card)
             temp_dealer_hand = deepcopy(dealer_hand)
             temp_dealer_hand.add(card)
-            probs = dealer_rollout_exact(temp_dealer_hand, temp_counter)
+            probs = dealer_rollout_exact(temp_dealer_hand, counter)
+            counter.uncount(card)
             for value, prob in probs.items():
                 dealer_probs[value] += card_prob * prob
         return dealer_probs
