@@ -4,7 +4,7 @@ from collections import defaultdict
 
 class Counter(ABC):
     @abstractmethod
-    def count(self, card: int | list[int]) -> None:
+    def count(self, card: int) -> None:
         self.total_remaining: int
 
     @abstractmethod
@@ -23,19 +23,21 @@ class Counter(ABC):
 class PerfectCounter(Counter):
     def __init__(self, num_decks: int):
         self.num_decks = num_decks
-        self.remaining = {i: self.num_decks * 4 for i in range(2, 10)}
+        self.remaining = [0] * 12
+        for i in range(2, 10):
+            self.remaining[i] = self.num_decks * 4
         self.remaining[10] = self.num_decks * 16  # 10, J, Q, K
         self.remaining[11] = self.num_decks * 4  # A
         self.total_remaining = self.num_decks * 52
-        self.counts = defaultdict(int)
 
-    def count(self, card: int | list[int]) -> None:
-        if isinstance(card, list):
-            for c in card:
-                self.count(c)
-        else:
-            self.remaining[card] -= 1
-            self.total_remaining -= 1
+        if __debug__:
+            self.counts = defaultdict(int)
+
+    def count(self, card: int) -> None:
+        self.remaining[card] -= 1
+        self.total_remaining -= 1
+
+        if __debug__:
             self.counts[card] += 1
             if self.remaining[card] < 0:
                 raise ValueError(f"Negative remaining: {self.remaining[card]}")
@@ -45,15 +47,18 @@ class PerfectCounter(Counter):
     def uncount(self, card: int) -> None:
         self.remaining[card] += 1
         self.total_remaining += 1
-        self.counts[card] -= 1
-        if self.counts[card] < 0:
-            raise ValueError(f"Negative counts: {self.counts[card]}")
+
+        if __debug__:
+            self.counts[card] -= 1
+            if self.counts[card] < 0:
+                raise ValueError(f"Negative counts: {self.counts[card]}")
 
     def probability(self, card: int) -> float:
         return self.remaining[card] / self.total_remaining
 
     def reset(self):
-        self.remaining = {i: self.num_decks * 4 for i in range(2, 10)}
+        for i in range(2, 10):
+            self.remaining[i] = self.num_decks * 4
         self.remaining[10] = self.num_decks * 16  # 10, J, Q, K
         self.remaining[11] = self.num_decks * 4  # A
         self.total_remaining = self.num_decks * 52
@@ -65,19 +70,16 @@ class HighLowCounter(Counter):
         self.running_count = 0
         self.total_remaining = self.num_decks * 52
 
-    def count(self, card: int | list[int]) -> None:
-        if isinstance(card, list):
-            for c in card:
-                self.count(c)
-        else:
-            if card < 7:
-                self.running_count += 1
-            elif card > 9:
-                self.running_count -= 1
-            self.total_remaining -= 1
+    def count(self, card: int) -> None:
+        if card < 7:
+            self.running_count += 1
+        elif card > 9:
+            self.running_count -= 1
+        self.total_remaining -= 1
 
-        if abs(self.running_count) / 2 > 5 * self.total_remaining / 13:
-            raise ValueError(f"Running count too large: {self.running_count}")
+        if __debug__:
+            if abs(self.running_count) / 2 > 5 * self.total_remaining / 13:
+                raise ValueError(f"Running count too large: {self.running_count}")
 
     def uncount(self, card: int) -> None:
         if card < 7:
@@ -86,8 +88,9 @@ class HighLowCounter(Counter):
             self.running_count += 1
         self.total_remaining += 1
 
-        if abs(self.running_count) / 2 > 5 * self.total_remaining / 13:
-            raise ValueError(f"Running count too large: {self.running_count}")
+        if __debug__:
+            if abs(self.running_count) / 2 > 5 * self.total_remaining / 13:
+                raise ValueError(f"Running count too large: {self.running_count}")
 
     def probability(self, card: int) -> float:
         naive_num_remaining = self.total_remaining / 13
@@ -112,7 +115,7 @@ class NoneCounter(Counter):
         self.num_decks = num_decks
         self.total_remaining = num_decks * 52
 
-    def count(self, card: int | list[int]) -> None:
+    def count(self, card: int) -> None:
         self.total_remaining -= 1
 
     def uncount(self, card: int) -> None:

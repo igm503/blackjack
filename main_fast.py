@@ -88,7 +88,8 @@ def main(bankroll: float, config: GameConfig):
 
         dealer_face = dealer.cards[0]
 
-        counter.count(player.cards)
+        for card in player.cards:
+            counter.count(card)
         counter.count(dealer_face)
 
         hand_evs = hand_ev_table[dealer_face]

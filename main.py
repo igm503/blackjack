@@ -91,7 +91,8 @@ def main(bankroll: float, config: GameConfig):
         dealer = deck.deal_hand()
         player = deck.deal_hand()
 
-        counter.count(player.cards)
+        for card in player.cards:
+            counter.count(card)
         counter.count(dealer.cards[0])
 
         dealer_face = dealer.cards[0]
