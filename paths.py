@@ -41,7 +41,6 @@ def get_prob_tree(counter: Counter) -> ProbNode:
         return child
 
     def create_tree(node: ProbNode):
-        nonlocal total
         if not node.children and node.value < 40:
             for card in range(2, 12):
                 prob = counter.probability(card)
@@ -52,14 +51,10 @@ def get_prob_tree(counter: Counter) -> ProbNode:
                     counter.count(card)
                     create_tree(child)
                     counter.uncount(card)
-                total += 1
 
     root = ProbNode((), 0)
-    total = 0
 
     create_tree(root)
-
-    # print(f"Number of ProbNodes : {total}")
 
     return root
 
@@ -460,7 +455,7 @@ if __name__ == "__main__":
     # test_func = profile(lambda: get_dealer_ev_fast(dealer_node, prob_node, 0))
     test_func = profile(
         lambda: (
-            get_dealer_ev(dealer_root, prob_node, 0),
+            get_dealer_ev(dealer_root, prob_root, 0),
             get_dealer_ev_fast(prob_node, 0, dealer_card=10),
         )
     )
