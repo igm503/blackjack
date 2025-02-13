@@ -1,5 +1,4 @@
-import math
-import collections
+from collections import defaultdict
 from line_profiler import LineProfiler
 
 from tqdm import tqdm
@@ -41,7 +40,7 @@ def get_prob_tree(counter: Counter) -> ProbNode:
         return child
 
     def create_tree(node: ProbNode):
-        if not node.children and node.value < 40:
+        if not node.children and node.value < 43:
             for card in range(2, 12):
                 prob = counter.probability(card)
                 child = get_child(node, card)
@@ -124,8 +123,7 @@ class DealerNode:
         self.children = []
         self.is_soft = is_soft
         self.value = value
-        self.times_reached = 0
-        self.starting_cards = set()
+        self.times_reached = defaultdict(int)
 
 
 def get_dealer_tree() -> DealerNode:
@@ -145,6 +143,7 @@ def get_dealer_tree() -> DealerNode:
         hit = hit_under_17
 
     def create_children(node: DealerNode, starting_card: int | None = None):
+        children = []
         for card in range(2, 12):
             if not node.cards:
                 starting_card = card
@@ -161,14 +160,14 @@ def get_dealer_tree() -> DealerNode:
                     new_value = -1
                 child = DealerNode(new_cards, new_value, new_soft)
                 all_nodes[new_cards] = child
-            child.times_reached += 1
-            child.starting_cards.add(starting_card)
-            node.children.append(child)
-            if not hit(child):
-                if node.value != -1 and node.cards not in dealer_finals:
-                    dealer_finals[child.cards] = child
+            child.times_reached[starting_card] += 1
+            children.append(child)
             if hit(child):
                 create_children(child, starting_card)
+            elif child.value != -1 and node.cards not in dealer_finals:
+                dealer_finals[child.cards] = child
+        if not node.children:
+            node.children = children
 
     create_children(root_node)
 
@@ -255,7 +254,8 @@ def calculate_hand_values(
     node: HandNode, prob_node: ProbNode, dealer_node: HandNode, seen: set
 ) -> tuple[float, float]:
     if node.children and node not in seen:
-        node.stand_ev = get_dealer_ev(dealer_node, prob_node, node.value)
+        # node.stand_ev = get_dealer_ev(dealer_node, prob_node, node.value)
+        node.stand_ev = get_dealer_ev_fast(dealer_node, prob_node, node)
         seen.add(node)
 
     hit_sum = 0.0
@@ -291,9 +291,11 @@ def calculate_dealer_values(
     node: HandNode, prob_node: ProbNode, prob: float, player_value: int
 ) -> float:
     ev = 0.0
+    if len(node.children) > 10:
+        for child in node.children:
+            print(child.cards)
+        print()
     for i, child in enumerate(node.children):
-        print(prob_node.cards)
-        print(node.cards)
         child_prob = prob * prob_node.probs[i]
         if child_prob > 0:
             if child.children:
@@ -388,22 +390,27 @@ def get_stand_ev(node: HandNode) -> float:
     return stand_ev
 
 
-def get_dealer_ev_fast(prob_node, player_value, dealer_card=None):
+def get_dealer_ev_fast(dealer_node, prob_node, player_node):
     ev = 0.0
-    dealer_card = dealer_node.cards[0]
+    player_value = player_node.value
+    dealer_card = dealer_node.cards[0] if dealer_node.cards else None
     total_prob = 0
     for cards, final_node in dealer_finals.items():
-        if dealer_card is None or dealer_card in final_node.starting_cards:
+        if dealer_card is None or dealer_card in final_node.times_reached:
             prob = 1.0
-            times_reached = final_node.times_reached
             current_node = prob_node
-            skipped = False
-            # print(times_reached, cards, final_node.starting_cards, final_node.value)
-            for card in cards:
-                if not skipped and card == dealer_card:
-                    skipped = True
-                    times_reached /= len(final_node.starting_cards)
-                else:
+            if dealer_card is not None:
+                times_reached = final_node.times_reached[dealer_card]
+                skip_index = cards.index(dealer_card)
+                for card in cards[:skip_index]:
+                    prob *= current_node.probs[card - 2]
+                    current_node = current_node.children[card - 2]
+                for card in cards[skip_index + 1 :]:
+                    prob *= current_node.probs[card - 2]
+                    current_node = current_node.children[card - 2]
+            else:
+                times_reached = sum(final_node.times_reached.values())
+                for card in cards:
                     prob *= current_node.probs[card - 2]
                     current_node = current_node.children[card - 2]
             prob *= times_reached
@@ -412,7 +419,6 @@ def get_dealer_ev_fast(prob_node, player_value, dealer_card=None):
             elif player_value < final_node.value:
                 ev -= prob
             total_prob += prob
-    print("total prob", total_prob)
     return ev + (1 - total_prob)
 
 
@@ -423,15 +429,11 @@ if __name__ == "__main__":
     counter = PerfectCounter(8)
 
     prob_root = get_prob_tree(counter)
-
     player_root = get_player_tree()
     dealer_root = get_dealer_tree()
     print("final values", len(dealer_finals))
 
     final_values = []
-
-    # for i in tqdm(range(1000)):
-    #     hand = get_hand_node(player_root, [2, 2, 2, 2, 2, 2, 11])
 
     dealer_cards = [2]
     for card in dealer_cards:
@@ -445,18 +447,17 @@ if __name__ == "__main__":
     prob_node = get_node(prob_root, player_cards)
     profile = LineProfiler()
 
-    # profile.add_function(get_hand_values)
+    profile.add_function(get_hand_values)
     profile.add_function(get_dealer_ev)
-    # profile.add_function(calculate_hand_values)
+    profile.add_function(calculate_hand_values)
     profile.add_function(calculate_dealer_values)
     profile.add_function(get_dealer_ev_fast)
 
-    # test_func = profile(lambda: get_hand_values(player_node, prob_node, dealer_node))
-    # test_func = profile(lambda: get_dealer_ev_fast(dealer_node, prob_node, 0))
     test_func = profile(
         lambda: (
-            get_dealer_ev(dealer_root, prob_root, 0),
-            get_dealer_ev_fast(prob_node, 0, dealer_card=10),
+            # get_dealer_ev(dealer_root, prob_root, 0),
+            # get_dealer_ev_fast(prob_node, 0, dealer_card=10),
+            get_hand_values(player_node, prob_node, dealer_node),
         )
     )
 
@@ -464,17 +465,16 @@ if __name__ == "__main__":
 
     profile.print_stats()
 
-    print(get_dealer_probs(dealer_node, counter))
-    print(get_dealer_ev(dealer_node, prob_node, 0))
-    print(get_dealer_ev_fast(prob_node, 0, dealer_card=dealer_node.cards[0]))
+    # print(get_dealer_probs(dealer_node, counter))
+    # print("normal with probs", get_dealer_ev(dealer_node, prob_node, 0))
+    # print("fast with probs", get_dealer_ev_fast(dealer_node, prob_node, 0))
     for i in tqdm(range(100000)):
         # get_dealer_ev(dealer_node, prob_node, 0)
         # _get_dealer_ev(dealer_root, counter, 0)
-        get_dealer_ev_fast(dealer_node, prob_node, 0)
+        # get_dealer_ev_fast(prob_node, 0, dealer_card=dealer_node.cards[0])
+        get_hand_values(player_root, prob_root, dealer_root)
 
     print(get_hand_values(player_node, prob_node, dealer_node))
-    for i in tqdm(range(100000)):
-        get_hand_values(player_node, prob_node, dealer_node)
 
 
 # def _get_hand_values(hand_node: HandNode, counter: Counter, dealer_node: HandNode):
