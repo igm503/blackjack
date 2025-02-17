@@ -8,8 +8,6 @@ from models.counter import PerfectCounter, Counter
 
 HIT_SOFT_17 = False
 
-dealer_finals = {}
-
 
 class ProbNode:
     def __init__(
@@ -103,7 +101,7 @@ def get_player_tree() -> HandNode:
     current_nodes = [root_node]
 
     def hit_to_bust(node):
-        return node.value != -1
+        return node.value != -1 and (node.value < 21 or node.is_soft)
 
     while current_nodes:
         next_nodes = []
@@ -126,8 +124,9 @@ class DealerNode:
         self.times_reached = defaultdict(int)
 
 
-def get_dealer_tree() -> DealerNode:
-    all_nodes = {}
+def get_dealer_finals() -> list[DealerNode]:
+    dealer_finals: dict[tuple[int, ...], DealerNode] = {}
+    all_nodes: dict[tuple[int, ...], DealerNode] = {}
 
     root_node = DealerNode((), 0, False)
 
@@ -171,7 +170,7 @@ def get_dealer_tree() -> DealerNode:
 
     create_children(root_node)
 
-    return root_node
+    return list(dealer_finals.values())
 
 
 def get_node(root: HandNode | ProbNode, cards: list[int]) -> HandNode | ProbNode:
@@ -182,80 +181,11 @@ def get_node(root: HandNode | ProbNode, cards: list[int]) -> HandNode | ProbNode
     return current_node
 
 
-# def get_hand_values(hand_node: HandNode, counter: Counter, dealer_node: HandNode):
-#     seen = set()
-#
-#     def calculate_node_values(node: HandNode) -> tuple[float, float]:
-#         if node.children and node not in seen:
-#             # node.dealer_probs = get_dealer_probs(dealer_node, counter)
-#             node.stand_ev = get_dealer_ev(dealer_node, counter, node.value)
-#             seen.add(node)
-#
-#         hit_sum = 0.0
-#         double_sum = 0.0
-#
-#         for i, child in enumerate(node.children):
-#             card = i + 2
-#             prob = counter.probability(card)
-#             if prob > 0:
-#                 if child.children:
-#                     counter.count(card)
-#                     child_stand, child_hit = calculate_node_values(child)
-#                     counter.uncount(card)
-#                 else:
-#                     child_stand, child_hit = -1.0, -1.0
-#
-#                 hit_sum += prob * max(child_stand, child_hit)
-#                 double_sum += prob * child_stand
-#
-#         node.hit_ev = hit_sum
-#         node.double_ev = 2 * double_sum
-#
-#         return node.stand_ev, node.hit_ev
-#
-#     stand_ev, hit_ev = calculate_node_values(hand_node)
-#     return stand_ev, hit_ev, hand_node.double_ev
-#
-#
-# def get_dealer_ev(dealer_node, counter, player_value):
-#     assert player_value != -1
-#
-#     ev = 0.0
-#
-#     def calculate_node_values(node: HandNode, prob: float) -> None:
-#         nonlocal ev
-#         for i, child in enumerate(node.children):
-#             card = i + 2
-#             card_prob = counter.probability(card)
-#             if card_prob > 0:
-#                 child_prob = card_prob * prob
-#                 if child.children:
-#                     counter.count(card)
-#                     calculate_node_values(child, child_prob)
-#                     counter.uncount(card)
-#                 else:
-#                     if player_value > child.value:
-#                         ev += child_prob
-#                     elif player_value < child.value:
-#                         ev -= child_prob
-#
-#     if not dealer_node.children:
-#         if player_value > dealer_node.value:
-#             return 1.0
-#         elif player_value < dealer_node.value:
-#             return -1.0
-#         return 0.0
-#
-#     calculate_node_values(dealer_node, 1.0)
-#     return ev
-
-
 def calculate_hand_values(
-    node: HandNode, prob_node: ProbNode, dealer_node: HandNode, seen: set
+    node: HandNode, prob_node: ProbNode, dealer_card: int | None, seen: set
 ) -> tuple[float, float]:
-    if node.children and node not in seen:
-        # node.stand_ev = get_dealer_ev(dealer_node, prob_node, node.value)
-        node.stand_ev = get_dealer_ev_fast(dealer_node, prob_node, node)
+    if node.value != -1 and node not in seen and len(node.cards) > 1:
+        node.stand_ev = get_stand_ev(dealer_card, prob_node, node)
         seen.add(node)
 
     hit_sum = 0.0
@@ -265,9 +195,9 @@ def calculate_hand_values(
         child_prob_node = prob_node.children[i]
         card_prob = prob_node.probs[i]
         if card_prob > 0:
-            if child.children:
+            if child.value != -1:
                 child_stand, child_hit = calculate_hand_values(
-                    child, child_prob_node, dealer_node, seen
+                    child, child_prob_node, dealer_card, seen
                 )
             else:
                 child_stand, child_hit = -1.0, -1.0
@@ -281,122 +211,19 @@ def calculate_hand_values(
     return node.stand_ev, node.hit_ev
 
 
-def get_hand_values(hand_node: HandNode, prob_node: ProbNode, dealer_node: HandNode):
+def get_hand_values(hand_node: HandNode, prob_node: ProbNode, dealer_card: int | None = None):
     seen = set()
-    stand_ev, hit_ev = calculate_hand_values(hand_node, prob_node, dealer_node, seen)
+    stand_ev, hit_ev = calculate_hand_values(hand_node, prob_node, dealer_card, seen)
     return stand_ev, hit_ev, hand_node.double_ev
 
 
-def calculate_dealer_values(
-    node: HandNode, prob_node: ProbNode, prob: float, player_value: int
-) -> float:
-    ev = 0.0
-    if len(node.children) > 10:
-        for child in node.children:
-            print(child.cards)
-        print()
-    for i, child in enumerate(node.children):
-        child_prob = prob * prob_node.probs[i]
-        if child_prob > 0:
-            if child.children:
-                ev += calculate_dealer_values(
-                    child, prob_node.children[i], child_prob, player_value
-                )
-            else:
-                if player_value > child.value:
-                    ev += child_prob
-                elif player_value < child.value:
-                    ev -= child_prob
-    return ev
-
-
-def get_dealer_ev(dealer_node: HandNode, prob_node: ProbNode, player_value: int) -> float:
-    assert player_value != -1
-    if not dealer_node.children:
-        if player_value > dealer_node.value:
-            return 1.0
-        elif player_value < dealer_node.value:
-            return -1.0
-        return 0.0
-
-    prob_node = get_node(prob_node, dealer_node.cards)
-
-    return calculate_dealer_values(dealer_node, prob_node, 1.0, player_value)
-
-
-def _calculate_dealer_values(node: HandNode, counter, prob: float, player_value: int) -> float:
-    ev = 0.0
-    for i, child in enumerate(node.children):
-        card = i + 2
-        card_prob = counter.probability(card)
-        if card_prob > 0:
-            child_prob = card_prob * prob
-            if child.children:
-                counter.count(card)
-                ev += _calculate_dealer_values(child, counter, child_prob, player_value)
-                counter.uncount(card)
-            else:
-                if player_value > child.value:
-                    ev += child_prob
-                elif player_value < child.value:
-                    ev -= child_prob
-    return ev
-
-
-def _get_dealer_ev(dealer_node: HandNode, counter, player_value: int) -> float:
-    assert player_value != -1
-    if not dealer_node.children:
-        if player_value > dealer_node.value:
-            return 1.0
-        elif player_value < dealer_node.value:
-            return -1.0
-        return 0.0
-
-    return _calculate_dealer_values(dealer_node, counter, 1.0, player_value)
-
-
-def get_dealer_probs(hand_node: HandNode, counter: Counter):
-    probs = {-1: 0.0, 17: 0.0, 18: 0.0, 19: 0.0, 20: 0.0, 21: 0.0}
-
-    def calculate_node_values(node: HandNode, prob: float) -> dict[int, float]:
-        for i, child in enumerate(node.children):
-            card = i + 2
-            card_prob = counter.probability(card)
-            if card_prob > 0:
-                if child.children:
-                    counter.count(card)
-                    calculate_node_values(child, card_prob * prob)
-                    counter.uncount(card)
-                else:
-                    probs[child.value] += card_prob * prob
-
-        return probs
-
-    if not hand_node.children:
-        probs[hand_node.value] = 1.0
-        return probs
-
-    calculate_node_values(hand_node, 1.0)
-    return probs
-
-
-def get_stand_ev(node: HandNode) -> float:
-    stand_ev = 0
-    for dealer_value, prob in node.dealer_probs.items():
-        if node.value > dealer_value:
-            stand_ev += prob
-        elif node.value < dealer_value:
-            stand_ev -= prob
-    return stand_ev
-
-
-def get_dealer_ev_fast(dealer_node, prob_node, player_node):
+def get_stand_ev(dealer_card: int | None, prob_node, player_node):
     ev = 0.0
     player_value = player_node.value
-    dealer_card = dealer_node.cards[0] if dealer_node.cards else None
     total_prob = 0
-    for cards, final_node in dealer_finals.items():
+    for final_node in dealer_finals:
         if dealer_card is None or dealer_card in final_node.times_reached:
+            cards = final_node.cards
             prob = 1.0
             current_node = prob_node
             if dealer_card is not None:
@@ -423,47 +250,44 @@ def get_dealer_ev_fast(dealer_node, prob_node, player_node):
 
 
 if __name__ == "__main__":
-    # for i in tqdm(range(100)):
-    #     root_node = get_possible_hands()
-
     counter = PerfectCounter(8)
 
     prob_root = get_prob_tree(counter)
     player_root = get_player_tree()
-    dealer_root = get_dealer_tree()
+    dealer_finals = get_dealer_finals()
     print("final values", len(dealer_finals))
 
     final_values = []
 
-    dealer_cards = [2]
-    for card in dealer_cards:
-        counter.count(card)
+    dealer_card = 2
+    counter.count(dealer_card)
     player_cards = [2, 9]
     for card in player_cards:
         counter.count(card)
 
     player_node = get_node(player_root, player_cards)
-    dealer_node = get_node(dealer_root, dealer_cards)
     prob_node = get_node(prob_root, player_cards)
-    profile = LineProfiler()
 
-    profile.add_function(get_hand_values)
-    profile.add_function(get_dealer_ev)
-    profile.add_function(calculate_hand_values)
-    profile.add_function(calculate_dealer_values)
-    profile.add_function(get_dealer_ev_fast)
+    # profile = LineProfiler()
+    # profile.add_function(get_hand_values)
+    # profile.add_function(get_dealer_ev)
+    # profile.add_function(calculate_hand_values)
+    # profile.add_function(calculate_dealer_values)
+    # profile.add_function(get_dealer_ev_fast)
+    #
+    # test_func = profile(
+    #     lambda: (
+    #         # get_dealer_ev(dealer_root, prob_root, 0),
+    #         # get_dealer_ev_fast(prob_node, 0, dealer_card=10),
+    #         get_hand_values(player_root, prob_root, dealer_root),
+    #     )
+    # )
+    #
+    # test_func()
+    # profile.print_stats()
 
-    test_func = profile(
-        lambda: (
-            # get_dealer_ev(dealer_root, prob_root, 0),
-            # get_dealer_ev_fast(prob_node, 0, dealer_card=10),
-            get_hand_values(player_node, prob_node, dealer_node),
-        )
-    )
-
-    test_func()
-
-    profile.print_stats()
+    print(get_hand_values(player_root, prob_root))
+    print(get_hand_values(player_node, prob_node))
 
     # print(get_dealer_probs(dealer_node, counter))
     # print("normal with probs", get_dealer_ev(dealer_node, prob_node, 0))
@@ -472,107 +296,6 @@ if __name__ == "__main__":
         # get_dealer_ev(dealer_node, prob_node, 0)
         # _get_dealer_ev(dealer_root, counter, 0)
         # get_dealer_ev_fast(prob_node, 0, dealer_card=dealer_node.cards[0])
-        get_hand_values(player_root, prob_root, dealer_root)
+        get_hand_values(player_root, prob_root)
 
-    print(get_hand_values(player_node, prob_node, dealer_node))
-
-
-# def _get_hand_values(hand_node: HandNode, counter: Counter, dealer_node: HandNode):
-#     current_node = hand_node
-#     current_position = []
-#     current_parent = []
-#     seen = set()
-#     down = True
-#     while True:
-#         if down:
-#             if current_node not in seen:
-#                 current_node.dealer_probs = get_dealer_probs(dealer_node, counter)
-#                 current_node.stand_ev = get_stand_ev(current_node)
-#                 seen.add(current_node)
-#             if current_node.children:
-#                 new_card = 2
-#                 card_prob = counter.probability(new_card)
-#                 current_position.append(0)
-#                 if card_prob == 0:
-#                     down = False
-#                 else:
-#                     counter.count(new_card)
-#                     current_parent.append(current_node)
-#                     current_node = current_node.children[0]
-#             else:
-#                 assert current_node.value in [-1, 21]
-#                 down = False
-#                 current_node = current_parent.pop()
-#                 counter.uncount(current_position[-1] + 2)
-#
-#         elif current_node.children:
-#             if current_position[-1] < 9:
-#                 current_position[-1] += 1
-#                 new_card = current_position[-1] + 2
-#                 card_prob = counter.probability(new_card)
-#                 if card_prob != 0:
-#                     down = True
-#                     counter.count(new_card)
-#                     current_parent.append(current_node)
-#                     current_node = current_node.children[current_position[-1]]
-#             else:
-#                 if current_position[-1] == 9:
-#                     current_node.hit_ev, current_node.double_ev = get_hit_double_ev(
-#                         current_node, counter
-#                     )
-#                 if current_node == hand_node:
-#                     break
-#                 current_node = current_parent.pop()
-#                 current_position.pop()
-#                 counter.uncount(current_position[-1] + 2)
-#
-#     return hand_node.stand_ev, hand_node.hit_ev, hand_node.double_ev
-#
-#
-# def _get_dealer_probs(hand_node: HandNode, counter: Counter) -> dict[int, float]:
-#     probs = {-1: 0.0, 17: 0.0, 18: 0.0, 19: 0.0, 20: 0.0, 21: 0.0}
-#     current_node = hand_node
-#     current_position = []
-#     current_parent = []
-#     current_probs = [1.0]
-#     down = True
-#     while True:
-#         if down:
-#             if current_node.children:
-#                 current_position.append(0)
-#                 new_card = 2
-#                 card_prob = counter.probability(new_card)
-#                 if card_prob == 0:
-#                     down = False
-#                 else:
-#                     counter.count(new_card)
-#                     current_parent.append(current_node)
-#                     current_node = current_node.children[0]
-#                     current_probs.append(current_probs[-1] * card_prob)
-#             else:
-#                 probs[current_node.value] += current_probs.pop()
-#                 down = False
-#                 current_node = current_parent.pop()
-#                 counter.uncount(current_position[-1] + 2)
-#
-#         elif current_node.children:
-#             if current_position[-1] < 9:
-#                 current_position[-1] += 1
-#                 new_card = current_position[-1] + 2
-#                 card_prob = counter.probability(new_card)
-#                 if card_prob != 0:
-#                     down = True
-#                     counter.count(new_card)
-#                     current_parent.append(current_node)
-#                     current_probs.append(current_probs[-1] * card_prob)
-#                     current_node = current_node.children[current_position[-1]]
-#             else:
-#                 if current_node == hand_node:
-#                     break
-#                 current_node = current_parent.pop()
-#                 current_position.pop()
-#                 counter.uncount(current_position[-1] + 2)
-#                 current_probs.pop()
-#
-#     assert abs(1 - sum(probs.values())) < 1e-6
-#     return probs
+    print(get_hand_values(player_node, prob_node, dealer_card))
