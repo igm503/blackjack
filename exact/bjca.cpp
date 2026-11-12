@@ -278,7 +278,9 @@ static int cmd_bench(const Args &a) {
 //             settle-early  + finished hands settled immediately (martingale)
 //             layered       + layer-by-layer streaming solver, one thread
 //             bfs-dealer    + breadth-first dealer evaluation, one thread
-//             current       + all threads (whatever the tree does today)
+//             threads       + every layer split across all threads
+//             shared-plan   + one forward pass per pair shared by all upcards
+//             current       + SIMD dealer evaluation (whatever the tree does today)
 static int cmd_bench_case(const Args &a) {
   Rules rules;  // S17, DAS, double any two, one card to split aces, no surrender
   rules.resplit_aces = false;
@@ -286,10 +288,14 @@ static int cmd_bench_case(const Args &a) {
   SplitAlgo algo = SplitAlgo::Layered;
   int threads = a.threads;
   g_dealer_depth_first = false;
-  if (a.variant == "carry-all") algo = SplitAlgo::CarryAll, threads = 1, g_dealer_depth_first = true;
+  g_dealer_simd = true;
+  bool share_plans = true;
+  if (a.variant == "threads") g_dealer_simd = false, share_plans = false;
+  else if (a.variant == "shared-plan") g_dealer_simd = false;
+  else if (a.variant == "carry-all") algo = SplitAlgo::CarryAll, threads = 1, g_dealer_depth_first = true;
   else if (a.variant == "settle-early") algo = SplitAlgo::TopDown, threads = 1, g_dealer_depth_first = true;
-  else if (a.variant == "layered") threads = 1, g_dealer_depth_first = true;
-  else if (a.variant == "bfs-dealer") threads = 1;
+  else if (a.variant == "layered") threads = 1, g_dealer_depth_first = true, g_dealer_simd = false, share_plans = false;
+  else if (a.variant == "bfs-dealer") threads = 1, g_dealer_simd = false, share_plans = false;
   else if (a.variant != "current") { fprintf(stderr, "unknown variant\n"); return 2; }
 
   struct Case { const char *id; int decks, max_splits; const char *player, *up; };
@@ -304,6 +310,7 @@ static int cmd_bench_case(const Args &a) {
     rules.max_splits = cs.max_splits;
     Engine eng(rules, threads);
     eng.algo = algo;
+    eng.share_plans = share_plans;
     eng.state_limit = 60u * 1000 * 1000;  // ~5 GB of hash table
     double ev = 0;
     size_t nodes = 0;

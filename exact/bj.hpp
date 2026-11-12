@@ -90,6 +90,8 @@ struct DealerProgram {
 
 // Benchmark switch: evaluate the dealer with the original depth-first walk.
 inline bool g_dealer_depth_first = false;
+// Benchmark switch: let the layered solver batch dealer evaluations with SIMD.
+inline bool g_dealer_simd = true;
 
 struct DealerTable {
   std::array<DealerProgram, NR> prog;
@@ -256,6 +258,62 @@ inline void dealer_probs(const DealerTable &t, const Counts &c, int n, int u, do
     s += out[i];
   }
   out[5] = 1.0 - s;
+}
+
+// Vectorised dealer evaluation: W shoes at once against the same upcard.
+// The trie walk is identical for every shoe (only the factors differ), so
+// each step becomes one SIMD multiply. Lane results do not depend on what the
+// other lanes hold.
+template <int W>
+inline void dealer_probs_batch(const DealerTable &t, const Counts *const c[W], const int n[W], int u,
+                               double out[W][6]) {
+  typedef double vec __attribute__((vector_size(8 * W)));
+  const DealerProgram &P = t.prog[u];
+  vec w[MAX_DEALER_W];
+  for (int r = 0; r < NR; ++r) {
+    int k = 0;
+    for (int i = P.woff[r]; i < P.woff[r + 1]; ++i, ++k)
+      for (int l = 0; l < W; ++l) w[i][l] = (*c[l])[r] > k ? double((*c[l])[r] - k) : 0.0;
+  }
+  vec val[MAX_DEALER_NODES];
+  for (int l = 0; l < W; ++l) val[0][l] = 1.0;
+  const size_t nn = P.parent.size();
+  const uint16_t *par = P.parent.data();
+  const uint8_t *wi = P.widx.data();
+  for (size_t i = 1; i < nn; ++i) val[i] = val[par[i]] * w[wi[i]];
+  vec invff[32];
+  for (int l = 0; l < W; ++l) {
+    invff[0][l] = 1.0;
+    for (int d = 1; d <= P.maxdepth; ++d)
+      invff[d][l] = n[l] - d + 1 > 0 ? invff[d - 1][l] / double(n[l] - d + 1) : 0.0;
+  }
+  vec acc[5];
+  for (auto &a : acc)
+    for (int l = 0; l < W; ++l) a[l] = 0.0;
+  const uint16_t *fn = P.fin_node.data();
+  const double *fm = P.fin_mult.data();
+  for (const auto &g : P.groups) {
+    vec s0, s1;
+    for (int l = 0; l < W; ++l) s0[l] = 0.0, s1[l] = 0.0;
+    uint32_t j = g.begin;
+    for (; j + 2 <= g.end; j += 2) {
+      s0 += fm[j] * val[fn[j]];
+      s1 += fm[j + 1] * val[fn[j + 1]];
+    }
+    for (; j < g.end; ++j) s0 += fm[j] * val[fn[j]];
+    acc[g.total - 17] += (s0 + s1) * invff[g.depth];
+  }
+  for (int l = 0; l < W; ++l) {
+    double omega = 1.0;
+    if (u == TEN) omega = 1.0 - double((*c[l])[ACE]) / n[l];
+    if (u == ACE) omega = 1.0 - double((*c[l])[TEN]) / n[l];
+    double s = 0;
+    for (int i = 0; i < 5; ++i) {
+      out[l][i] = omega > 0 ? acc[i][l] / omega : 0.0;
+      s += out[l][i];
+    }
+    out[l][5] = 1.0 - s;
+  }
 }
 
 // Original evaluation: walk the trie depth-first carrying a stack of prefix

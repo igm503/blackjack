@@ -221,6 +221,8 @@ struct Engine {
   int threads;
   SplitAlgo algo = SplitAlgo::Layered;
   size_t state_limit = ~size_t(0);  // TopDown / CarryAll only
+  size_t eval_memory_budget = size_t(6) << 30;  // working memory for concurrent upcards
+  bool share_plans = true;  // one forward pass per pair, shared by all upcards
 
   explicit Engine(const Rules &r, int threads_ = 0)
       : rules(r), dealer(r.h17), threads(threads_ > 0 ? threads_ : default_threads()) {}
@@ -404,38 +406,96 @@ struct Engine {
           if (c1 == c2 && rules.max_splits >= 1) tasks.push_back({u, c1});
         }
     }
-    // 3. splits. Small problems run side by side; big ones (many resplits)
-    // run one at a time with the solver itself multi-threaded, to bound memory.
+    // 3. splits
     auto ts = std::chrono::steady_clock::now();
     std::atomic<size_t> nodes{0};
-    auto run = [&](const Task &t, int inner) {
-      Counts unseen = shoe;
-      unseen[t.u]--;
-      unseen[t.p] -= 2;
-      size_t nn = 0;
-      out.cell[t.u][t.p][t.p].split = split_ev(unseen, t.p, t.u, inner, &nn);
-      out.cell[t.u][t.p][t.p].split_nodes = nn;
-      nodes += nn;
-    };
-    bool big = algo == SplitAlgo::Layered && rules.max_splits >= 3 && n > 60;
-    if (big) {
-      for (auto &t : tasks) run(t, threads);
-    } else {
-      // largest problems first: low pairs make the longest hands
-      std::stable_sort(tasks.begin(), tasks.end(), [](const Task &a, const Task &b) { return a.p < b.p; });
-      std::atomic<size_t> next{0};
-      std::atomic<bool> failed{false};
-      std::string err;
-      parallel_for(size_t(threads), threads, [&](int, size_t, size_t) {
-        for (size_t i; !failed.load() && (i = next++) < tasks.size();) {
-          try {
-            run(tasks[i], 1);
-          } catch (const std::exception &e) {
-            if (!failed.exchange(true)) err = e.what();
+    if (algo == SplitAlgo::Layered && share_plans) {
+      // Which states are reachable does not depend on the upcard, so each
+      // pair gets one forward pass (plan) shared by all of its upcards.
+      std::vector<int> ups[NR];
+      for (auto &t : tasks) ups[t.p].push_back(t.u);
+      auto supply_for = [&](int p) {
+        Counts s = shoe;
+        s[p] -= 2;
+        return s;
+      };
+      auto eval = [&](const LayeredSplitSolver &solver, const LayeredSplitSolver::Plan &P, int p, int u, int inner) {
+        Counts unseen = supply_for(p);
+        unseen[u]--;
+        auto res = solver.evaluate(P, unseen, u, inner);
+        out.cell[u][p][p].split = res.value;
+        out.cell[u][p][p].split_nodes = res.nodes;
+        nodes += res.nodes;
+      };
+      bool big = rules.max_splits >= 3 && n > 60;
+      if (!big) {
+        // Small problems: every plan, then every (pair, upcard) evaluation,
+        // side by side on one thread each.
+        LayeredSplitSolver solver(rules, dealer, 1);
+        std::vector<LayeredSplitSolver::Plan> plans(NR);
+        std::atomic<int> nextp{0};
+        parallel_for(size_t(std::min(threads, NR)), threads, [&](int, size_t, size_t) {
+          for (int p; (p = nextp++) < NR;)
+            if (!ups[p].empty()) plans[p] = solver.plan(supply_for(p), p);
+        });
+        std::stable_sort(tasks.begin(), tasks.end(), [&](const Task &x, const Task &y) {
+          return plans[x.p].values > plans[y.p].values;
+        });
+        std::atomic<size_t> next{0};
+        parallel_for(size_t(threads), threads, [&](int, size_t, size_t) {
+          for (size_t i; (i = next++) < tasks.size();) eval(solver, plans[tasks[i].p], tasks[i].p, tasks[i].u, 1);
+        });
+      } else {
+        // Big problems: one pair at a time to bound memory. The plan uses all
+        // threads; its upcards are then evaluated as many at a time as fit in
+        // the memory budget, sharing the threads between them.
+        LayeredSplitSolver solver(rules, dealer, threads);
+        for (int p = 0; p < NR; ++p) {
+          if (ups[p].empty()) continue;
+          auto P = solver.plan(supply_for(p), p);
+          size_t need = std::max<size_t>(P.eval_bytes(solver.hand_combos()), 1);
+          size_t kmax = std::min<size_t>(size_t(threads), std::max<size_t>(1, eval_memory_budget / need));
+          // waves of upcards; each wave shares all the threads between its members
+          for (size_t done = 0; done < ups[p].size();) {
+            size_t k = std::min(kmax, ups[p].size() - done);
+            int inner = int((size_t(threads) + k - 1) / k);
+            parallel_for(k, int(k), [&](int, size_t a, size_t b) {
+              for (size_t i = a; i < b; ++i) eval(solver, P, p, ups[p][done + i], inner);
+            });
+            done += k;
           }
         }
-      });
-      if (failed.load()) throw std::runtime_error(err);
+      }
+    } else {
+      auto run = [&](const Task &t, int inner) {
+        Counts unseen = shoe;
+        unseen[t.u]--;
+        unseen[t.p] -= 2;
+        size_t nn = 0;
+        out.cell[t.u][t.p][t.p].split = split_ev(unseen, t.p, t.u, inner, &nn);
+        out.cell[t.u][t.p][t.p].split_nodes = nn;
+        nodes += nn;
+      };
+      // largest problems first: low pairs make the longest hands
+      std::stable_sort(tasks.begin(), tasks.end(), [](const Task &x, const Task &y) { return x.p < y.p; });
+      if (algo == SplitAlgo::Layered && rules.max_splits >= 3 && n > 60) {
+        // big problems one at a time, each using every thread
+        for (auto &t : tasks) run(t, threads);
+      } else {
+        std::atomic<size_t> next{0};
+        std::atomic<bool> failed{false};
+        std::string err;
+        parallel_for(size_t(threads), threads, [&](int, size_t, size_t) {
+          for (size_t i; !failed.load() && (i = next++) < tasks.size();) {
+            try {
+              run(tasks[i], 1);
+            } catch (const std::exception &e) {
+              if (!failed.exchange(true)) err = e.what();
+            }
+          }
+        });
+        if (failed.load()) throw std::runtime_error(err);
+      }
     }
     out.split_nodes = nodes.load();
     out.split_seconds = std::chrono::duration<double>(std::chrono::steady_clock::now() - ts).count();
