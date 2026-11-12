@@ -98,11 +98,31 @@ VARIANTS = [
                 "per trie node), and the value loops read children through small dense tables.",
     },
     {
-        "variant": "current",
+        "variant": "chunks",
         "label": "Dynamic scheduling",
-        "note": "Work is handed to threads in small chunks instead of one fixed share each, so the fast "
-                "cores are not left waiting for the efficiency cores. The forward pass also precomputes "
-                "what each node sends to its children once instead of once per card.",
+        "note": "Work is handed to threads in small chunks instead of one fixed share each, and the forward "
+                "pass precomputes what each node sends to its children once instead of once per card. "
+                "No measurable gain on the whole-round cases.",
+    },
+    {
+        "variant": "current",
+        "label": "All upcards in one pass",
+        "note": "For the big whole-round problems, a pair's upcards are evaluated together: the node is "
+                "decoded and its children located once, the values of the upcards sit side by side, and "
+                "dealer evaluations run eight card compositions per pass. Profiling shows the dealer "
+                "evaluation is now most of the remaining time.",
+    },
+    {
+        "variant": "stand17",
+        "label": "Skip hits on hard 17+ (certified)",
+        "note": "Two thirds of the states only exist to confirm that hitting a hard 17-20 in a split hand is "
+                "bad. They are no longer enumerated; instead every skipped move is checked against a sound "
+                "upper bound. The bound is complete on the last hand to be played. While other hands are "
+                "still waiting it holds as long as seeing one extra card is worth less than the certified "
+                "margin (a few percent of a bet) to them; the largest value measured in full enumerations "
+                "is under 0.1%. Positions whose margin is below 2% are solved by full enumeration.",
+        "assumption": "Relies on: one extra seen card is worth less than the certified margin to the hands "
+                      "still to be played. Off by default (--assume-stand17).",
     },
 ]
 
@@ -185,6 +205,9 @@ def run_case(binary: Path, case_id: str, variant: str, timeout: float) -> dict:
         if best is None or out["seconds"] < best["seconds"]:
             best = {"status": "ok", "seconds": out["seconds"], "ev": out["ev"], "nodes": out["nodes"],
                     "threads": out["threads"]}
+            for k in ("cert_info", "cert_fallbacks"):
+                if k in out:
+                    best[k] = out[k]
         best["runs"] = attempt + 1
         if time.time() - t0 > 8:
             break
@@ -202,6 +225,11 @@ def record(variant: str, label: str, note: str, iteration_id: str | None, timeou
             h["iterations"].append(entry)
         entry.update(label=label, note=note, variant=variant, commit=commit(),
                      recorded_at=time.strftime("%Y-%m-%d %H:%M:%S"))
+        assumption = next((v.get("assumption") for v in VARIANTS if v["variant"] == variant and v["label"] == label), None)
+        if assumption:
+            entry["assumption"] = assumption
+        else:
+            entry.pop("assumption", None)
         for c in CASES:
             if cases is None or c["id"] in cases:
                 entry["results"][c["id"]] = {"status": "running"}
@@ -245,7 +273,7 @@ def backfill(timeout: float):
 
     # The multi-threaded build needs the machine to itself; the single-threaded
     # iterations can then share it (two memory-hungry hash solvers in series).
-    for name in ("threads", "shared-plan", "simd", "current"):
+    for name in ("threads", "shared-plan", "simd", "chunks", "current", "stand17"):
         go(name)
     with ThreadPoolExecutor(3) as pool:
         futures = [pool.submit(go, "bfs-dealer"), pool.submit(go, "layered"),

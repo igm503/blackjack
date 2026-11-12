@@ -70,7 +70,13 @@ static void usage() {
           "  --h17  --no-das  --double-on any|9-11|10-11  --max-splits N\n"
           "  --resplit-aces  --hit-split-aces  --surrender none|early|late  --bj-payout X\n"
           "other:\n"
-          "  --threads N\n");
+          "  --threads N\n"
+          "  --assume-stand17     do not enumerate hitting hard 17+ in split hands; each skipped move is\n"
+          "                       checked by a bound that is exact on the last hand and otherwise holds if\n"
+          "                       one extra seen card is worth less than the reported margin to later hands\n"
+          "  --min-info-margin X  certificate margin required to accept such a result (default 0.02);\n"
+          "                       thinner cases are re-solved by full enumeration\n"
+          "  --measure-info       report the largest observed value of one extra seen card\n");
   exit(2);
 }
 
@@ -84,6 +90,8 @@ struct Args {
   std::string player, up, split_pair, bench_case, variant = "current";
   int pending = 0, splits_left = 0;
   bool json = false, table = false;
+  bool assume_stand17 = false, measure_info = false, no_batch = false;
+  double min_info_margin = 0.02;
   int threads = 0;
 };
 
@@ -129,6 +137,10 @@ static Args parse(int argc, char **argv) {
     else if (f == "--threads") a.threads = atoi(val().c_str());
     else if (f == "--case") a.bench_case = val();
     else if (f == "--variant") a.variant = val();
+    else if (f == "--assume-stand17") a.assume_stand17 = true;
+    else if (f == "--min-info-margin") a.min_info_margin = atof(val().c_str());
+    else if (f == "--measure-info") a.measure_info = true;
+    else if (f == "--no-batch") a.no_batch = true;
     else if (f == "--json") a.json = true;
     else if (f == "--table") a.table = true;
     else usage();
@@ -144,6 +156,28 @@ static std::string rules_str(const Rules &r) {
   o << (r.surrender == Surrender::None ? "" : r.surrender == Surrender::Early ? " ES" : " LS");
   o << " BJ" << r.bj_payout;
   return o.str();
+}
+
+static void configure(Engine &eng, const Args &a) {
+  eng.assume_stand17 = a.assume_stand17;
+  eng.min_info_margin = a.min_info_margin;
+  eng.measure_info = a.measure_info;
+  eng.batch_upcards = !a.no_batch;
+}
+static void report_cert(const Engine &eng) {
+  if (eng.assume_stand17) {
+    size_t acc = eng.cert_accepted.load(), fb = eng.cert_fallbacks.load();
+    printf("hits on hard 17+ after a split were not enumerated in %zu split positions", acc);
+    if (acc) {
+      if (eng.cert_info_seen == std::numeric_limits<double>::infinity())
+        printf("; proven never better than standing");
+      else
+        printf("; never better than standing provided one extra seen card is worth < %.4f to later hands",
+               eng.cert_info_seen);
+    }
+    printf(". %zu positions needed full enumeration.\n", fb);
+  }
+  if (eng.measure_info) printf("largest observed value of one extra seen card to later hands: %.3e\n", eng.max_info_seen);
 }
 
 static std::string hand_json(const HandResult &h) {
@@ -166,6 +200,7 @@ static int cmd_round(const Args &a) {
   for (int r = 0; r < NR; ++r)
     if (shoe[r] < 0) { fprintf(stderr, "negative card count\n"); return 2; }
   Engine eng(a.rules, a.threads);
+  configure(eng, a);
   auto res = eng.analyze_round(shoe);
   if (a.json) {
     printf("{\"ev\":%s,\"seconds\":%.6f,\"cells\":[", num(res.ev).c_str(), res.seconds);
@@ -189,6 +224,7 @@ static int cmd_round(const Args &a) {
   printf("exact EV of the round with perfect play: %+.12f  (%+.6f%%)\n", res.ev, 100 * res.ev);
   printf("time: %.3fs total, %.3fs in splits (%zu split nodes, %d threads)\n", res.seconds,
          res.split_seconds, res.split_nodes, eng.threads);
+  report_cert(eng);
   if (a.table) {
     printf("\nbest action by starting hand (rows) and dealer upcard (columns)\n");
     printf("S stand, H hit, D double, P split, R surrender\n\n      ");
@@ -223,6 +259,7 @@ static int cmd_hand(const Args &a) {
   for (int r = 0; r < NR; ++r)
     if (unseen[r] < 0) { fprintf(stderr, "negative card count\n"); return 2; }
   Engine eng(a.rules, a.threads);
+  configure(eng, a);
   auto t0 = std::chrono::steady_clock::now();
   HandResult h = a.split_pair.empty()
                      ? eng.analyze_hand(unseen, hand, up)
@@ -254,6 +291,7 @@ static int cmd_hand(const Args &a) {
   printf("time: %.3fs", sec);
   if (h.split_nodes) printf("  (%zu split nodes)", h.split_nodes);
   printf("\n");
+  report_cert(eng);
   return 0;
 }
 
@@ -295,11 +333,14 @@ static int cmd_bench_case(const Args &a) {
   if (a.variant == "threads") g_dealer_simd = false, share_plans = false;
   else if (a.variant == "shared-plan") g_dealer_simd = false;
   else if (a.variant == "simd") ;
+  else if (a.variant == "chunks") g_static_schedule = false;
+  else if (a.variant == "stand17") g_static_schedule = false;
   else if (a.variant == "carry-all") algo = SplitAlgo::CarryAll, threads = 1, g_dealer_depth_first = true;
   else if (a.variant == "settle-early") algo = SplitAlgo::TopDown, threads = 1, g_dealer_depth_first = true;
   else if (a.variant == "layered") threads = 1, g_dealer_depth_first = true, g_dealer_simd = false, share_plans = false;
   else if (a.variant == "bfs-dealer") threads = 1, g_dealer_simd = false, share_plans = false;
-  else if (a.variant != "current") { fprintf(stderr, "unknown variant\n"); return 2; }
+  else if (a.variant != "current" && a.variant != "simd" && a.variant != "threads" && a.variant != "shared-plan" &&
+           a.variant != "stand17" && a.variant != "chunks") { fprintf(stderr, "unknown variant\n"); return 2; }
 
   struct Case { const char *id; int decks, max_splits; const char *player, *up; };
   static const Case cases[] = {
@@ -314,6 +355,8 @@ static int cmd_bench_case(const Args &a) {
     Engine eng(rules, threads);
     eng.algo = algo;
     eng.share_plans = share_plans;
+    eng.assume_stand17 = a.variant == "stand17";
+    eng.batch_upcards = a.variant == "current" || a.variant == "stand17";
     eng.state_limit = 60u * 1000 * 1000;  // ~5 GB of hash table
     double ev = 0;
     size_t nodes = 0;
@@ -340,8 +383,14 @@ static int cmd_bench_case(const Args &a) {
       return 3;
     }
     double sec = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
-    printf("{\"case\":\"%s\",\"variant\":\"%s\",\"seconds\":%.6f,\"ev\":%.15g,\"nodes\":%zu,\"threads\":%d}\n",
+    printf("{\"case\":\"%s\",\"variant\":\"%s\",\"seconds\":%.6f,\"ev\":%.15g,\"nodes\":%zu,\"threads\":%d",
            cs.id, a.variant.c_str(), sec, ev, nodes, eng.threads);
+    if (eng.assume_stand17) {
+      double m = eng.cert_info_seen;
+      printf(",\"cert_info\":%s,\"cert_fallbacks\":%zu", m == std::numeric_limits<double>::infinity() ? "null" : num(m).c_str(),
+             eng.cert_fallbacks.load());
+    }
+    printf("}\n");
     return 0;
   }
   fprintf(stderr, "unknown case; cases:");

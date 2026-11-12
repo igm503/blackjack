@@ -1,0 +1,463 @@
+{
+ "machine": "Apple M2 Max, 12 threads",
+ "cases": [
+  {
+   "id": "hand-88vT-6d",
+   "title": "One decision: split 8,8 vs 10",
+   "detail": "6 decks, resplit to 4 hands. Exact EV of splitting with perfect play of every hand."
+  },
+  {
+   "id": "hand-22v6-8d",
+   "title": "Hardest single decision: split 2,2 vs 6",
+   "detail": "8 decks, resplit to 4 hands. Low pairs make the longest hands, so this is the worst case."
+  },
+  {
+   "id": "round-6d-spl1",
+   "title": "Whole round, one split",
+   "detail": "6 decks. Every starting hand against every upcard, one split allowed. Exact EV of the round."
+  },
+  {
+   "id": "round-6d-spl3",
+   "title": "Whole round, full resplits",
+   "detail": "6 decks. Every starting hand against every upcard, resplit to 4 hands. The full problem."
+  }
+ ],
+ "iterations": [
+  {
+   "id": "original",
+   "label": "Original code (main branch)",
+   "note": "paths.cpp / all_paths.cpp build one node for every possible shoe composition: 33 million nodes and 8.8 GB for a single deck, before any EV is computed. Six decks would need about 4e14 nodes, so none of these cases can run.",
+   "variant": null,
+   "results": {
+    "hand-88vT-6d": {
+     "status": "infeasible"
+    },
+    "hand-22v6-8d": {
+     "status": "infeasible"
+    },
+    "round-6d-spl1": {
+     "status": "infeasible"
+    },
+    "round-6d-spl3": {
+     "status": "infeasible"
+    }
+   },
+   "commit": "198c838",
+   "recorded_at": "2026-11-11 23:02:32"
+  },
+  {
+   "id": "v1-carry-all",
+   "label": "Memoised game tree",
+   "note": "First exact solver: recursion over every line of play, memoised on the cards drawn, with the bets on every finished split hand carried in the state. One thread.",
+   "variant": "carry-all",
+   "results": {
+    "hand-88vT-6d": {
+     "status": "state-limit",
+     "message": "state limit exceeded",
+     "gave_up_after_seconds": 28.556228
+    },
+    "hand-22v6-8d": {
+     "status": "state-limit",
+     "message": "state limit exceeded",
+     "gave_up_after_seconds": 37.671372
+    },
+    "round-6d-spl1": {
+     "status": "ok",
+     "seconds": 35.34543,
+     "ev": -0.00456843635361193,
+     "nodes": 48481202,
+     "threads": 1,
+     "runs": 1
+    },
+    "round-6d-spl3": {
+     "status": "state-limit",
+     "message": "state limit exceeded",
+     "gave_up_after_seconds": 58.427191
+    }
+   },
+   "commit": "58345ec+",
+   "recorded_at": "2026-11-11 23:10:04"
+  },
+  {
+   "id": "v2-settle-early",
+   "label": "Settle finished hands early",
+   "note": "A finished hand's expected payoff cannot be changed by later play (the dealer's outcome distribution is a martingale in the cards seen), so finished hands are settled at once and dropped from the state.",
+   "variant": "settle-early",
+   "results": {
+    "hand-88vT-6d": {
+     "status": "ok",
+     "seconds": 28.997135,
+     "ev": -0.474878331523948,
+     "nodes": 46883613,
+     "threads": 1,
+     "runs": 1
+    },
+    "hand-22v6-8d": {
+     "status": "state-limit",
+     "message": "state limit exceeded",
+     "gave_up_after_seconds": 38.624152
+    },
+    "round-6d-spl1": {
+     "status": "ok",
+     "seconds": 31.259704,
+     "ev": -0.00456843635361193,
+     "nodes": 42120322,
+     "threads": 1,
+     "runs": 1
+    },
+    "round-6d-spl3": {
+     "status": "state-limit",
+     "message": "state limit exceeded",
+     "gave_up_after_seconds": 122.359452
+    }
+   },
+   "commit": "198c838+",
+   "recorded_at": "2026-11-11 23:06:23"
+  },
+  {
+   "id": "v3-layered",
+   "label": "Layered streaming solver",
+   "note": "States grouped by cards drawn and solved layer by layer over sorted arrays: no hash table, children found by merge cursors, one dealer evaluation per card set. One thread.",
+   "variant": "layered",
+   "results": {
+    "hand-88vT-6d": {
+     "status": "ok",
+     "seconds": 4.380819,
+     "ev": -0.474878331523948,
+     "nodes": 8091982,
+     "threads": 1,
+     "runs": 3
+    },
+    "hand-22v6-8d": {
+     "status": "ok",
+     "seconds": 79.485644,
+     "ev": 0.236864147239738,
+     "nodes": 69843427,
+     "threads": 1,
+     "runs": 1
+    },
+    "round-6d-spl1": {
+     "status": "ok",
+     "seconds": 28.746347,
+     "ev": -0.00456843635361193,
+     "nodes": 8906483,
+     "threads": 1,
+     "runs": 1
+    },
+    "round-6d-spl3": {
+     "status": "ok",
+     "seconds": 3808.805203,
+     "ev": -0.00402812242351966,
+     "nodes": 2171317761,
+     "threads": 1,
+     "runs": 1
+    }
+   },
+   "commit": "198c838+",
+   "recorded_at": "2026-11-11 23:06:23"
+  },
+  {
+   "id": "v4-bfs-dealer",
+   "label": "Breadth-first dealer evaluation",
+   "note": "Dealer probabilities were 90% of the time and bound by one long dependency chain. Laying the dealer trie out level by level lets the CPU overlap the multiplies. One thread.",
+   "variant": "bfs-dealer",
+   "results": {
+    "hand-88vT-6d": {
+     "status": "ok",
+     "seconds": 3.417406,
+     "ev": -0.474878331523948,
+     "nodes": 8091982,
+     "threads": 1,
+     "runs": 3
+    },
+    "hand-22v6-8d": {
+     "status": "ok",
+     "seconds": 42.588866,
+     "ev": 0.236864147239738,
+     "nodes": 69843427,
+     "threads": 1,
+     "runs": 1
+    },
+    "round-6d-spl1": {
+     "status": "ok",
+     "seconds": 5.53434,
+     "ev": -0.00456843635361194,
+     "nodes": 8906483,
+     "threads": 1,
+     "runs": 3
+    },
+    "round-6d-spl3": {
+     "status": "ok",
+     "seconds": 1761.579501,
+     "ev": -0.00402812242351966,
+     "nodes": 2171317761,
+     "threads": 1,
+     "runs": 1
+    }
+   },
+   "commit": "198c838+",
+   "recorded_at": "2026-11-11 23:06:23"
+  },
+  {
+   "id": "v5-threads",
+   "label": "Multi-threaded layers",
+   "note": "Each layer is split across all cores, forward and backward; value buffers are recycled between layers.",
+   "variant": "threads",
+   "results": {
+    "hand-88vT-6d": {
+     "status": "ok",
+     "seconds": 0.965575,
+     "ev": -0.474878331523948,
+     "nodes": 8091982,
+     "threads": 12,
+     "runs": 3
+    },
+    "hand-22v6-8d": {
+     "status": "ok",
+     "seconds": 6.837852,
+     "ev": 0.236864147239738,
+     "nodes": 69843427,
+     "threads": 12,
+     "runs": 3
+    },
+    "round-6d-spl1": {
+     "status": "ok",
+     "seconds": 0.785564,
+     "ev": -0.00456843635361194,
+     "nodes": 8906483,
+     "threads": 12,
+     "runs": 3
+    },
+    "round-6d-spl3": {
+     "status": "ok",
+     "seconds": 265.446211,
+     "ev": -0.00402812242351966,
+     "nodes": 2171317761,
+     "threads": 12,
+     "runs": 1
+    }
+   },
+   "commit": "8c6d0c1+",
+   "recorded_at": "2026-11-12 01:33:27"
+  },
+  {
+   "id": "v6-shared-plan",
+   "label": "One forward pass per pair",
+   "note": "Which states are reachable does not depend on the dealer's upcard, so the forward pass is done once per pair and its ten upcards are evaluated side by side. (Whole-round cases only.)",
+   "variant": "shared-plan",
+   "results": {
+    "hand-88vT-6d": {
+     "status": "ok",
+     "seconds": 0.732005,
+     "ev": -0.474878331523948,
+     "nodes": 8091982,
+     "threads": 12,
+     "runs": 3
+    },
+    "hand-22v6-8d": {
+     "status": "ok",
+     "seconds": 6.269327,
+     "ev": 0.236864147239738,
+     "nodes": 69843427,
+     "threads": 12,
+     "runs": 3
+    },
+    "round-6d-spl1": {
+     "status": "ok",
+     "seconds": 0.541381,
+     "ev": -0.00456843635361194,
+     "nodes": 8907790,
+     "threads": 12,
+     "runs": 3
+    },
+    "round-6d-spl3": {
+     "status": "ok",
+     "seconds": 162.337705,
+     "ev": -0.00402812242351966,
+     "nodes": 2173801630,
+     "threads": 12,
+     "runs": 1
+    }
+   },
+   "commit": "8c6d0c1+",
+   "recorded_at": "2026-11-12 01:38:20"
+  },
+  {
+   "id": "v7-simd",
+   "label": "SIMD dealer evaluation",
+   "note": "Four card compositions are pushed through the dealer trie per pass (one vector multiply per trie node), and the value loops read children through small dense tables.",
+   "variant": "simd",
+   "results": {
+    "hand-88vT-6d": {
+     "status": "ok",
+     "seconds": 0.605624,
+     "ev": -0.474878331523948,
+     "nodes": 8091982,
+     "threads": 12,
+     "runs": 3
+    },
+    "hand-22v6-8d": {
+     "status": "ok",
+     "seconds": 5.076948,
+     "ev": 0.236864147239738,
+     "nodes": 69843427,
+     "threads": 12,
+     "runs": 3
+    },
+    "round-6d-spl1": {
+     "status": "ok",
+     "seconds": 0.405797,
+     "ev": -0.00456843635361194,
+     "nodes": 8907790,
+     "threads": 12,
+     "runs": 3
+    },
+    "round-6d-spl3": {
+     "status": "ok",
+     "seconds": 123.083309,
+     "ev": -0.00402812242351966,
+     "nodes": 2173801630,
+     "threads": 12,
+     "runs": 1
+    }
+   },
+   "commit": "8c6d0c1+",
+   "recorded_at": "2026-11-12 01:41:25"
+  },
+  {
+   "id": "v8-chunks",
+   "results": {
+    "hand-88vT-6d": {
+     "status": "ok",
+     "seconds": 0.576631,
+     "ev": -0.474878331523948,
+     "nodes": 8091982,
+     "threads": 12,
+     "runs": 3
+    },
+    "hand-22v6-8d": {
+     "status": "ok",
+     "seconds": 4.867586,
+     "ev": 0.236864147239738,
+     "nodes": 69843427,
+     "threads": 12,
+     "runs": 3
+    },
+    "round-6d-spl1": {
+     "status": "ok",
+     "seconds": 0.367941,
+     "ev": -0.00456843635361194,
+     "nodes": 8907790,
+     "threads": 12,
+     "runs": 3
+    },
+    "round-6d-spl3": {
+     "status": "ok",
+     "seconds": 118.628668,
+     "ev": -0.00402812242351966,
+     "nodes": 2173801630,
+     "threads": 12,
+     "runs": 1
+    }
+   },
+   "label": "Dynamic scheduling",
+   "note": "Work is handed to threads in small chunks instead of one fixed share each, and the forward pass precomputes what each node sends to its children once instead of once per card. No measurable gain on the whole-round cases.",
+   "variant": "chunks",
+   "commit": "8c6d0c1+",
+   "recorded_at": "2026-11-12 01:43:47"
+  },
+  {
+   "id": "v9-current",
+   "results": {
+    "hand-88vT-6d": {
+     "status": "ok",
+     "seconds": 0.656114,
+     "ev": -0.474878331523948,
+     "nodes": 8091982,
+     "threads": 12,
+     "runs": 3
+    },
+    "hand-22v6-8d": {
+     "status": "ok",
+     "seconds": 4.675014,
+     "ev": 0.236864147239738,
+     "nodes": 69843427,
+     "threads": 12,
+     "runs": 3
+    },
+    "round-6d-spl1": {
+     "status": "ok",
+     "seconds": 0.376057,
+     "ev": -0.00456843635361194,
+     "nodes": 8907790,
+     "threads": 12,
+     "runs": 3
+    },
+    "round-6d-spl3": {
+     "status": "ok",
+     "seconds": 108.058586,
+     "ev": -0.00402812242351966,
+     "nodes": 2173801630,
+     "threads": 12,
+     "runs": 1
+    }
+   },
+   "label": "All upcards in one pass",
+   "note": "For the big whole-round problems, a pair's upcards are evaluated together: the node is decoded and its children located once, the values of the upcards sit side by side, and dealer evaluations run eight card compositions per pass. Profiling shows the dealer evaluation is now most of the remaining time.",
+   "variant": "current",
+   "commit": "8c6d0c1+",
+   "recorded_at": "2026-11-12 01:46:04"
+  },
+  {
+   "id": "v10-stand17",
+   "results": {
+    "hand-88vT-6d": {
+     "status": "ok",
+     "seconds": 0.245736,
+     "ev": -0.474878331523948,
+     "nodes": 1812912,
+     "threads": 12,
+     "cert_info": 0.0856336557851097,
+     "cert_fallbacks": 0,
+     "runs": 3
+    },
+    "hand-22v6-8d": {
+     "status": "ok",
+     "seconds": 1.970966,
+     "ev": 0.236864147239738,
+     "nodes": 24139624,
+     "threads": 12,
+     "cert_info": 0.119239318770984,
+     "cert_fallbacks": 0,
+     "runs": 3
+    },
+    "round-6d-spl1": {
+     "status": "ok",
+     "seconds": 0.221976,
+     "ev": -0.00456843635361194,
+     "nodes": 4297720,
+     "threads": 12,
+     "cert_info": 0.0397238269904305,
+     "cert_fallbacks": 0,
+     "runs": 3
+    },
+    "round-6d-spl3": {
+     "status": "ok",
+     "seconds": 33.15078,
+     "ev": -0.00402812242351966,
+     "nodes": 682384480,
+     "threads": 12,
+     "cert_info": 0.0277935998262161,
+     "cert_fallbacks": 0,
+     "runs": 1
+    }
+   },
+   "label": "Skip hits on hard 17+ (certified)",
+   "note": "Two thirds of the states only exist to confirm that hitting a hard 17-20 in a split hand is bad. They are no longer enumerated; instead every skipped move is checked against a sound upper bound. The bound is complete on the last hand to be played. While other hands are still waiting it holds as long as seeing one extra card is worth less than the certified margin (a few percent of a bet) to them; the largest value measured in full enumerations is under 0.1%. Positions whose margin is below 2% are solved by full enumeration.",
+   "variant": "stand17",
+   "commit": "8c6d0c1+",
+   "recorded_at": "2026-11-12 01:48:11",
+   "assumption": "Relies on: one extra seen card is worth less than the certified margin to the hands still to be played. Off by default (--assume-stand17)."
+  }
+ ]
+}

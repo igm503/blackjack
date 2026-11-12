@@ -78,6 +78,13 @@
   .chart svg .line { stroke: var(--series-1); stroke-width: 2; fill: none; stroke-linejoin: round; stroke-linecap: round; }
   .chart svg .dot { fill: var(--series-1); stroke: var(--surface-1); stroke-width: 2; }
   .chart svg .dnf { fill: var(--surface-1); stroke: var(--text-muted); stroke-width: 1.5; }
+  .chart svg .cond { fill: var(--surface-1); stroke: var(--series-1); stroke-width: 2.5; }
+  .legend { display: flex; gap: 18px; flex-wrap: wrap; color: var(--text-secondary); font-size: 13px; margin: -4px 0 12px; }
+  .legend svg { width: 14px; height: 14px; vertical-align: -2px; margin-right: 6px; }
+  .legend .k1 { fill: var(--series-1); }
+  .legend .k2 { fill: var(--surface-1); stroke: var(--series-1); stroke-width: 2.5; }
+  .legend .k3 { fill: var(--surface-1); stroke: var(--text-muted); stroke-width: 1.5; }
+  td .assume { color: var(--text-secondary); font-size: 12.5px; max-width: 52ch; margin-top: 4px; border-left: 2px solid var(--series-1); padding-left: 8px; }
   .chart svg .cross { stroke: var(--text-muted); stroke-width: 1; opacity: 0; }
   .chart svg .col { fill: transparent; outline: none; }
   .chart svg .col:focus-visible { fill: var(--hover); }
@@ -127,13 +134,20 @@
 <body>
 <main>
   <h1>Exact blackjack solver: time to solve, by iteration</h1>
-  <p class="sub">Every iteration computes the same exact numbers: every possible playout enumerated, including all
-    resplits, no sampling. What changes is how long it takes. Each chart is one benchmark case; time is on a log scale.</p>
+  <p class="sub">Every iteration arrives at the same numbers. Filled points enumerate every possible playout,
+    including all resplits, with no sampling; ringed points skip some provably or near-provably bad moves and say
+    what they rely on. Each chart is one benchmark case; time is on a log scale. Timings move by about 20% with
+    whatever else the machine is doing.</p>
   <div class="meta" id="machine"></div>
 
   <div class="tiles" id="tiles"></div>
 
   <h2>Solve time per iteration</h2>
+  <div class="legend">
+    <span><svg viewBox="0 0 14 14"><circle class="k1" cx="7" cy="7" r="5"/></svg>every line of play enumerated</span>
+    <span><svg viewBox="0 0 14 14"><circle class="k2" cx="7" cy="7" r="4.5"/></svg>relies on a stated assumption (see the table)</span>
+    <span><svg viewBox="0 0 14 14"><circle class="k3" cx="7" cy="7" r="4"/></svg>no result</span>
+  </div>
   <div class="charts" id="charts"></div>
 
   <h2>Iterations</h2>
@@ -174,7 +188,7 @@ function statusText(r) {
   if (!r) return "not run";
   switch (r.status) {
     case "infeasible": return "cannot run";
-    case "state-limit": return "ran out of memory" + (r.gave_up_after_seconds ? " after " + fmt(r.gave_up_after_seconds) : "");
+    case "state-limit": return "stopped at 60M states" + (r.gave_up_after_seconds ? " after " + fmt(r.gave_up_after_seconds) : "");
     case "timeout": return "did not finish in " + fmt(r.limit_seconds);
     case "running": return "running now…";
     case "queued": return "queued";
@@ -191,18 +205,19 @@ function renderTiles() {
   root.replaceChildren();
   for (const c of DATA.cases) {
     const runs = DATA.iterations.map(it => it.results[c.id]);
-    const firstIdx = runs.findIndex(ok);
-    let lastIdx = -1;
-    runs.forEach((r, i) => { if (ok(r)) lastIdx = i; });
+    const strict = runs.map((r, i) => ok(r) && !DATA.iterations[i].assumption ? i : -1).filter(i => i >= 0);
+    const cond = runs.map((r, i) => ok(r) && DATA.iterations[i].assumption ? i : -1).filter(i => i >= 0);
     const tile = el("div", { class: "card tile" });
     tile.append(el("div", { class: "label" }, c.title));
-    tile.append(el("div", { class: "value" }, lastIdx >= 0 ? fmt(runs[lastIdx].seconds) : "–"));
+    const last = strict.length ? strict[strict.length - 1] : -1;
+    tile.append(el("div", { class: "value" }, last >= 0 ? fmt(runs[last].seconds) : "–"));
     let delta = "";
-    if (lastIdx > firstIdx && firstIdx >= 0) {
-      delta = times(runs[firstIdx].seconds / runs[lastIdx].seconds) + " faster than the first iteration that finished (" + fmt(runs[firstIdx].seconds) + ")";
-    } else if (lastIdx >= 0) {
+    if (strict.length > 1) {
+      delta = times(runs[strict[0]].seconds / runs[last].seconds) + " faster than the first iteration that finished (" + fmt(runs[strict[0]].seconds) + ")";
+    } else if (last >= 0) {
       delta = "only one iteration has finished this case";
     }
+    if (cond.length) delta += (delta ? ". " : "") + fmt(runs[cond[cond.length - 1]].seconds) + " with the certified shortcut";
     tile.append(el("div", { class: "delta" }, delta));
     root.append(tile);
   }
@@ -259,7 +274,7 @@ function renderCharts() {
     if (d) svg.append(el("path", { class: "line", d }));
     const okIdx = runs.map((r, i) => ok(r) ? i : -1).filter(i => i >= 0);
     runs.forEach((r, i) => {
-      if (ok(r)) svg.append(el("circle", { class: "dot", cx: x(i), cy: y(r.seconds), r: 5 }));
+      if (ok(r)) svg.append(el("circle", { class: DATA.iterations[i].assumption ? "cond" : "dot", cx: x(i), cy: y(r.seconds), r: DATA.iterations[i].assumption ? 4.5 : 5 }));
       else if (failed(r)) svg.append(el("circle", { class: "dnf", cx: x(i), cy: stripY, r: 4 }));
     });
     // direct labels: first and last finished point only
@@ -334,6 +349,7 @@ function renderTable() {
     const td = el("td", { class: "name" });
     td.append(el("div", {}, it.label));
     if (it.note) td.append(el("div", { class: "what" }, it.note));
+    if (it.assumption) td.append(el("div", { class: "assume" }, it.assumption));
     const bits = [];
     if (it.commit) bits.push("commit " + it.commit);
     if (it.recorded_at) bits.push(it.recorded_at);
@@ -347,6 +363,7 @@ function renderTable() {
         let prev = null;
         for (let k = i - 1; k >= 0; k--) if (ok(DATA.iterations[k].results[c.id])) { prev = DATA.iterations[k].results[c.id]; break; }
         if (prev) cell.append(el("div", { class: "x" }, times(prev.seconds / r.seconds) + " vs previous"));
+        if (r.cert_info !== undefined && r.cert_info !== null) cell.append(el("div", { class: "x" }, "certified margin " + r.cert_info.toFixed(3)));
       } else {
         cell.append(el("div", { class: "muted" }, statusText(r)));
       }

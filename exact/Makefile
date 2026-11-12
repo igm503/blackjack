@@ -10,11 +10,17 @@ bjca: bjca.cpp $(HDRS)
 test_exact: test_exact.cpp $(HDRS)
 	$(CXX) $(CXXFLAGS) -o $@ test_exact.cpp
 
+# quick: about 1 minute of C++ checks plus the 5-minute brute-force comparison
 test: bjca test_exact
+	./test_exact quick
+	python3 test_reference.py
+
+# the full C++ suite takes about 13 minutes
+test-full: bjca test_exact
 	./test_exact
 	python3 test_reference.py
 
 clean:
-	rm -f bjca test_exact proto
+	rm -f bjca test_exact
 
-.PHONY: all test clean
+.PHONY: all test test-full clean

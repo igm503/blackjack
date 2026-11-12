@@ -4,6 +4,8 @@
 
 #include <atomic>
 #include <chrono>
+#include <limits>
+#include <mutex>
 #include <string>
 
 #include "bj.hpp"
@@ -223,6 +225,34 @@ struct Engine {
   size_t state_limit = ~size_t(0);  // TopDown / CarryAll only
   size_t eval_memory_budget = size_t(6) << 30;  // working memory for concurrent upcards
   bool share_plans = true;  // one forward pass per pair, shared by all upcards
+  bool batch_upcards = true;  // ... and all its upcards evaluated in one backward pass
+  // Skip (but certify) hitting hard 17+ in split hands; see SplitOptions. A
+  // result is accepted if its certificate tolerates one extra seen card
+  // being worth up to `min_info_margin` to the hands still to be played;
+  // otherwise that position is solved again by full enumeration.
+  bool assume_stand17 = false;
+  double min_info_margin = 0.02;
+  bool measure_info = false;
+  mutable std::atomic<size_t> cert_fallbacks{0}, cert_accepted{0};
+  mutable std::mutex cert_mutex;
+  mutable double cert_info_seen = std::numeric_limits<double>::infinity();  // weakest accepted certificate
+  mutable double max_info_seen = 0;
+
+  SplitOptions split_options(bool strict = false) const {
+    SplitOptions o;
+    o.stand_hard17 = assume_stand17 && !strict;
+    o.measure_info = measure_info;
+    return o;
+  }
+  bool accept(const LayeredSplitSolver::Result &r) const {
+    std::lock_guard<std::mutex> lock(cert_mutex);
+    max_info_seen = std::max(max_info_seen, r.max_info_value);
+    if (!assume_stand17 || r.skipped_states == 0) return true;
+    if (r.cert_last < 0 || r.cert_info < min_info_margin) return false;
+    cert_info_seen = std::min(cert_info_seen, r.cert_info);
+    ++cert_accepted;
+    return true;
+  }
 
   explicit Engine(const Rules &r, int threads_ = 0)
       : rules(r), dealer(r.h17), threads(threads_ > 0 ? threads_ : default_threads()) {}
@@ -251,8 +281,14 @@ struct Engine {
       if (nodes) *nodes = s.states();
       return v;
     }
-    LayeredSplitSolver s(rules, dealer, inner_threads);
+    LayeredSplitSolver s(rules, dealer, inner_threads, split_options());
     auto res = s.solve(unseen, pair_rank, upcard);
+    if (!accept(res)) {
+      ++cert_fallbacks;
+      LayeredSplitSolver strict(rules, dealer, inner_threads, split_options(true));
+      res = strict.solve(unseen, pair_rank, upcard);
+      accept(res);
+    }
     if (nodes) *nodes = res.nodes;
     return res.value;
   }
@@ -308,7 +344,7 @@ struct Engine {
     if (pending < 0 || splits_left < 0 || pending + splits_left > rules.max_splits)
       throw std::invalid_argument("pending + splits_left exceeds max_splits");
     HandResult out;
-    LayeredSplitSolver solver(rules, dealer, threads);
+    LayeredSplitSolver solver(rules, dealer, threads);  // always full enumeration here
     LayeredSplitSolver::Root root;
     root.lone = false;
     root.pending = pending;
@@ -423,21 +459,62 @@ struct Engine {
         Counts unseen = supply_for(p);
         unseen[u]--;
         auto res = solver.evaluate(P, unseen, u, inner);
+        if (!accept(res)) {
+          // certificate too thin for this position: enumerate everything
+          ++cert_fallbacks;
+          LayeredSplitSolver strict(rules, dealer, inner, split_options(true));
+          res = strict.solve(unseen, p, u);
+          accept(res);
+        }
         out.cell[u][p][p].split = res.value;
         out.cell[u][p][p].split_nodes = res.nodes;
         nodes += res.nodes;
       };
+      // Upcards of one pair evaluated together in one backward pass, as
+      // many per pass as the memory budget allows.
+      auto eval_batched = [&](const LayeredSplitSolver &solver, const LayeredSplitSolver::Plan &P, int p,
+                              int inner) {
+        const std::vector<int> &us = ups[p];
+        size_t per = 1;
+        while (per < us.size() && per < size_t(LayeredSplitSolver::BMAX) &&
+               solver.batch_bytes(P, int(per) + 1) <= eval_memory_budget)
+          ++per;
+        for (size_t done = 0; done < us.size(); done += per) {
+          std::vector<int> part(us.begin() + long(done), us.begin() + long(std::min(us.size(), done + per)));
+          std::vector<Counts> unseen;
+          for (int u : part) {
+            Counts c = supply_for(p);
+            c[u]--;
+            unseen.push_back(c);
+          }
+          auto results = solver.evaluate_batch(P, unseen, part, inner);
+          for (size_t j = 0; j < part.size(); ++j) {
+            auto res = results[j];
+            int u = part[j];
+            if (!accept(res)) {
+              ++cert_fallbacks;
+              LayeredSplitSolver strict(rules, dealer, inner, split_options(true));
+              res = strict.solve(unseen[j], p, u);
+              accept(res);
+            }
+            out.cell[u][p][p].split = res.value;
+            out.cell[u][p][p].split_nodes = res.nodes;
+            nodes += res.nodes;
+          }
+        }
+      };
       bool big = rules.max_splits >= 3 && n > 60;
       if (!big) {
-        // Small problems: every plan, then every (pair, upcard) evaluation,
-        // side by side on one thread each.
-        LayeredSplitSolver solver(rules, dealer, 1);
+        // Small problems: every plan, then every evaluation, side by side on
+        // one thread each.
+        LayeredSplitSolver solver(rules, dealer, 1, split_options());
         std::vector<LayeredSplitSolver::Plan> plans(NR);
         std::atomic<int> nextp{0};
         parallel_for(size_t(std::min(threads, NR)), threads, [&](int, size_t, size_t) {
           for (int p; (p = nextp++) < NR;)
             if (!ups[p].empty()) plans[p] = solver.plan(supply_for(p), p);
         });
+        // (one task per pair and upcard balances better here than batches)
         std::stable_sort(tasks.begin(), tasks.end(), [&](const Task &x, const Task &y) {
           return plans[x.p].values > plans[y.p].values;
         });
@@ -446,13 +523,15 @@ struct Engine {
           for (size_t i; (i = next++) < tasks.size();) eval(solver, plans[tasks[i].p], tasks[i].p, tasks[i].u, 1);
         });
       } else {
-        // Big problems: one pair at a time to bound memory. The plan uses all
-        // threads; its upcards are then evaluated as many at a time as fit in
-        // the memory budget, sharing the threads between them.
-        LayeredSplitSolver solver(rules, dealer, threads);
+        // Big problems: one pair at a time to bound memory, every thread on it.
+        LayeredSplitSolver solver(rules, dealer, threads, split_options());
         for (int p = 0; p < NR; ++p) {
           if (ups[p].empty()) continue;
           auto P = solver.plan(supply_for(p), p);
+          if (batch_upcards) {
+            eval_batched(solver, P, p, threads);
+            continue;
+          }
           size_t need = std::max<size_t>(P.eval_bytes(solver.hand_combos()), 1);
           size_t kmax = std::min<size_t>(size_t(threads), std::max<size_t>(1, eval_memory_budget / need));
           // waves of upcards; each wave shares all the threads between its members

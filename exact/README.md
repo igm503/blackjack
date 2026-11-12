@@ -106,8 +106,68 @@ pair. The speedups, in the order they were made:
 5. **One reachability pass per pair.** Which states are reachable does not
    depend on the upcard, so a pair is planned once and its ten upcards are
    evaluated side by side.
-6. **SIMD dealer evaluation.** Four card compositions go through the dealer
-   trie per pass.
+6. **SIMD dealer evaluation.** Four (or eight) card compositions go through
+   the dealer trie per pass.
+7. **All upcards of a pair in one pass** (big whole-round problems only): the
+   node is decoded and its children located once, and the values for the
+   upcards sit side by side.
+
+Dealer evaluation is now most of the remaining time.
+
+## The certified shortcut (`--assume-stand17`, off by default)
+
+About two thirds of the states in a split exist only to confirm that hitting a
+hard 17, 18, 19 or 20 is bad. With `--assume-stand17` those hits (and doubles)
+are not enumerated. Instead every skipped move is checked against a sound
+upper bound on what it could be worth:
+
+* whatever a hand ends on pays no more than 21 would against the same dealer,
+  and the dealer's distribution is a martingale, so a hit is worth at most
+  `g21 - P(bust)` to the hand itself (refined one card deeper where that is not
+  enough);
+* the only other thing a hit does is show the hands still waiting one more
+  card.
+
+On the last hand to be played there are no hands waiting, so the check is a
+proof. Otherwise the result is the exact optimum **provided seeing one extra
+card is never worth more than the reported margin to the hands still to be
+played**. The solver prints that margin, and re-solves by full enumeration any
+position whose margin is below `--min-info-margin` (default 0.02 of a bet).
+
+```
+$ ./bjca hand --decks 6 --player 2,2 --up T --assume-stand17
+  split     -0.4708963272          # identical to the full enumeration
+hits on hard 17+ after a split were not enumerated in 1 split positions; never better
+than standing provided one extra seen card is worth < 0.0794 to later hands.
+```
+
+For scale, `--measure-info` reports the largest such value seen anywhere in a
+full enumeration: 0.0001 to 0.0004 at 6 decks, 0.0008 at 2 decks, 0.005 at one
+deck (where the certificate is usually too thin and the solver enumerates
+instead). In every case tried the shortcut returns the same number as the full
+enumeration to the last digit, 2.5 to 3.5 times faster.
+
+What would make it unconditional is a provable bound of a few percent on the
+value of one seen card. The bounds I could derive are about ten times too
+loose.
+
+## How much faster could it get?
+
+Whole round, 6 decks, resplit to four hands is about 2 billion (card set,
+upcard) evaluations by full enumeration, or 0.7 billion with the shortcut. Each
+costs a few hundred nanoseconds, half of it one dealer evaluation. Things that
+were tried and did not help:
+
+* Dropping card sets too unlikely to matter: probability is not concentrated.
+  Removing every set with probability under 1e-22 removes only 20% of them.
+* Proving bad hits bad on the last hand only (where it needs no assumption):
+  the extra states come from bad hits in the earlier hands.
+* Skipping more than hard 17+ (for example hard 13+ against a 6, which would
+  shrink 2,2 a further 5 times): the cheap bound is too weak for stiff hands.
+
+An ideal solver that followed only sensible lines would still have roughly
+400 million evaluations, several seconds on this machine. One second for this
+problem does not look reachable with exact full-information play.
 
 ## Benchmark history
 
@@ -122,19 +182,35 @@ python3 bench/run.py record --label "what changed"
 python3 bench/run.py show
 ```
 
-Current numbers: `python3 bench/run.py show`, or the web page.
+| # | Iteration | 8,8 v 10 (6D, 4 hands) | 2,2 v 6 (8D, 4 hands) | Whole round, 1 split (6D) | Whole round, 4 hands (6D) |
+|---|---|---|---|---|---|
+| 0 | Original code (main branch) | cannot run | cannot run | cannot run | cannot run |
+| 1 | Memoised game tree | stopped at 60M states | stopped at 60M states | 35.3 s | stopped at 60M states |
+| 2 | Settle finished hands early | 29.0 s | stopped at 60M states | 31.3 s | stopped at 60M states |
+| 3 | Layered streaming solver | 4.38 s | 1m 19s | 28.7 s | 1h 03m |
+| 4 | Breadth-first dealer evaluation | 3.42 s | 42.6 s | 5.53 s | 29m 22s |
+| 5 | Multi-threaded layers | 0.97 s | 6.84 s | 0.79 s | 4m 25s |
+| 6 | One forward pass per pair | 0.73 s | 6.27 s | 0.54 s | 2m 42s |
+| 7 | SIMD dealer evaluation | 0.61 s | 5.08 s | 0.41 s | 2m 03s |
+| 8 | Dynamic scheduling | 0.58 s | 4.87 s | 0.37 s | 1m 59s |
+| 9 | All upcards in one pass | 0.66 s | 4.68 s | 0.38 s | 1m 48s |
+| 10 | Skip hits on hard 17+ (certified) * | 0.25 s | 1.97 s | 0.22 s | 33.2 s |
+
+\* relies on the stated assumption (see above). Apple M2 Max, 12 threads; iterations 1 to 4 are single-threaded, and 1 and 2 are stopped once their hash table passes 60 million states (about 5 GB). Timings vary by about 20% with other load on the machine. Every iteration returns the same EV for each case to 15 digits.
 
 ## Checking it
 
 ```
-make test
+make test        # about 6 minutes
+make test-full   # about 20 minutes
 ```
 
 * `test_exact.cpp`: the dealer trie against a naive card-by-card dealer; three
   independent split solvers against each other (carry every finished hand /
   settle early / layered, single and multi-threaded) over random rules, shoes,
-  pairs and upcards; and mid-split positions recombined into the value of the
-  split.
+  pairs and upcards; mid-split positions recombined into the value of the
+  split; batched against one-at-a-time evaluation; and the certified shortcut
+  against full enumeration wherever its certificate is accepted.
 * `reference.py` + `test_reference.py`: a deliberately naive Python brute force
   with exact rational arithmetic. It tracks the hole card with Bayes' rule,
   plays the dealer out for every possible hole card, and settles split hands
@@ -159,4 +235,4 @@ Cost is driven by resplits: each extra split multiplies the work by roughly 20
 to 30. Low pairs are the worst case because they make the longest hands. The
 split solver's working memory peaks at about 5 GB for 2,2 with three resplits
 at 8 decks. `--max-splits` above 3 is supported up to 6 but is only practical
-on small shoes.
+on small shoes. Mid-split queries (`--split-pair`) always use full enumeration.
