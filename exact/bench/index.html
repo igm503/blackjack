@@ -1,0 +1,403 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Solver benchmark history</title>
+<style>
+  :root {
+    color-scheme: light;
+    --page: #f4f3ef;
+    --surface-1: #fcfcfb;
+    --border: #e3e2dc;
+    --grid: #e9e8e3;
+    --text-primary: #0b0b0b;
+    --text-secondary: #52514e;
+    --text-muted: #86857f;
+    --series-1: #2a78d6;
+    --wash: rgba(42, 120, 214, 0.08);
+    --hover: rgba(11, 11, 11, 0.045);
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      color-scheme: dark;
+      --page: #121211;
+      --surface-1: #1a1a19;
+      --border: #2f2f2c;
+      --grid: #2a2a28;
+      --text-primary: #f0efec;
+      --text-secondary: #c3c2b7;
+      --text-muted: #8f8e86;
+      --series-1: #3987e5;
+      --wash: rgba(57, 135, 229, 0.12);
+      --hover: rgba(240, 239, 236, 0.06);
+    }
+  }
+  :root[data-theme="dark"] {
+    color-scheme: dark;
+    --page: #121211;
+    --surface-1: #1a1a19;
+    --border: #2f2f2c;
+    --grid: #2a2a28;
+    --text-primary: #f0efec;
+    --text-secondary: #c3c2b7;
+    --text-muted: #8f8e86;
+    --series-1: #3987e5;
+    --wash: rgba(57, 135, 229, 0.12);
+    --hover: rgba(240, 239, 236, 0.06);
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--page);
+    color: var(--text-primary);
+    font: 15px/1.45 -apple-system, BlinkMacSystemFont, "Segoe UI", Inter, Roboto, sans-serif;
+  }
+  main { max-width: 1180px; margin: 0 auto; padding: 28px 16px 64px; }
+  h1 { font-size: 24px; font-weight: 650; margin: 0 0 4px; letter-spacing: -0.01em; }
+  h2 { font-size: 16px; font-weight: 650; margin: 36px 0 12px; }
+  .sub { color: var(--text-secondary); margin: 0; max-width: 78ch; }
+  .meta { color: var(--text-muted); font-size: 13px; margin-top: 6px; }
+  .card {
+    background: var(--surface-1);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 16px;
+  }
+  .tiles { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; margin-top: 24px; }
+  .tile .label { color: var(--text-secondary); font-size: 13px; min-height: 2.9em; }
+  .tile .value { font-size: 30px; font-weight: 650; letter-spacing: -0.02em; margin-top: 6px; }
+  .tile .delta { color: var(--text-secondary); font-size: 13px; margin-top: 2px; min-height: 2.9em; }
+  .charts { display: grid; grid-template-columns: repeat(2, 1fr); gap: 12px; }
+  .chart h3 { font-size: 14px; font-weight: 650; margin: 0; }
+  .chart p { color: var(--text-secondary); font-size: 13px; margin: 2px 0 8px; min-height: 2.9em; }
+  .chart svg { display: block; width: 100%; height: auto; overflow: visible; }
+  .chart svg text { font: 12px -apple-system, BlinkMacSystemFont, "Segoe UI", Inter, Roboto, sans-serif; fill: var(--text-muted); }
+  .chart svg text.val { fill: var(--text-primary); font-weight: 600; }
+  .chart svg .grid { stroke: var(--grid); stroke-width: 1; }
+  .chart svg .line { stroke: var(--series-1); stroke-width: 2; fill: none; stroke-linejoin: round; stroke-linecap: round; }
+  .chart svg .dot { fill: var(--series-1); stroke: var(--surface-1); stroke-width: 2; }
+  .chart svg .dnf { fill: var(--surface-1); stroke: var(--text-muted); stroke-width: 1.5; }
+  .chart svg .cross { stroke: var(--text-muted); stroke-width: 1; opacity: 0; }
+  .chart svg .col { fill: transparent; outline: none; }
+  .chart svg .col:focus-visible { fill: var(--hover); }
+  .chart svg .band { fill: var(--hover); }
+  .tablewrap { overflow-x: auto; padding: 0; }
+  table { border-collapse: collapse; width: 100%; font-size: 13.5px; }
+  th, td { text-align: left; padding: 10px 12px; border-bottom: 1px solid var(--border); vertical-align: top; }
+  th { color: var(--text-secondary); font-weight: 600; font-size: 12.5px; white-space: nowrap; }
+  td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
+  td.idx { color: var(--text-muted); font-variant-numeric: tabular-nums; }
+  td .what { color: var(--text-secondary); font-size: 12.5px; max-width: 52ch; margin-top: 2px; }
+  td .x { color: var(--text-muted); font-size: 12px; }
+  tr.hl td { background: var(--hover); }
+  tr:last-child td { border-bottom: 0; }
+  tfoot td { color: var(--text-secondary); font-size: 12.5px; }
+  .muted { color: var(--text-muted); }
+  form { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+  input[type=text] {
+    font: inherit; color: inherit; background: var(--surface-1);
+    border: 1px solid var(--border); border-radius: 8px; padding: 8px 10px; min-width: 0; flex: 1 1 220px;
+  }
+  button {
+    font: inherit; font-weight: 600; color: var(--surface-1); background: var(--text-primary);
+    border: 0; border-radius: 8px; padding: 9px 14px; cursor: pointer;
+  }
+  button:disabled { opacity: 0.45; cursor: default; }
+  #runstatus { color: var(--text-secondary); font-size: 13px; margin-top: 8px; min-height: 1.4em; }
+  #tip {
+    position: fixed; pointer-events: none; z-index: 10; display: none;
+    background: var(--surface-1); border: 1px solid var(--border); border-radius: 8px;
+    box-shadow: 0 6px 24px rgba(0, 0, 0, 0.14); padding: 9px 11px; font-size: 12.5px; max-width: 280px;
+  }
+  #tip .t-val { font-size: 16px; font-weight: 650; color: var(--text-primary); }
+  #tip .t-name { color: var(--text-secondary); margin-top: 1px; }
+  #tip .t-extra { color: var(--text-muted); margin-top: 4px; }
+  @media (max-width: 860px) {
+    .tiles { grid-template-columns: repeat(2, 1fr); }
+    .charts { grid-template-columns: 1fr; }
+  }
+  @media (max-width: 460px) { .tiles { grid-template-columns: 1fr; } .tile .label, .tile .delta { min-height: 0; } }
+</style>
+</head>
+<body>
+<main>
+  <h1>Exact blackjack solver: time to solve, by iteration</h1>
+  <p class="sub">Every iteration computes the same exact numbers: every possible playout enumerated, including all
+    resplits, no sampling. What changes is how long it takes. Each chart is one benchmark case; time is on a log scale.</p>
+  <div class="meta" id="machine"></div>
+
+  <div class="tiles" id="tiles"></div>
+
+  <h2>Solve time per iteration</h2>
+  <div class="charts" id="charts"></div>
+
+  <h2>Iterations</h2>
+  <div class="card tablewrap"><table id="table"></table></div>
+
+  <h2>Time the current build</h2>
+  <div class="card">
+    <form id="runform">
+      <input type="text" id="label" placeholder="What changed in this iteration?" maxlength="80" required>
+      <input type="text" id="note" placeholder="Details (optional)" maxlength="400">
+      <button id="runbtn" type="submit">Build and benchmark</button>
+    </form>
+    <div id="runstatus"></div>
+  </div>
+</main>
+<div id="tip"></div>
+
+<script>
+const SVGNS = "http://www.w3.org/2000/svg";
+let DATA = null, hover = null;
+
+function el(tag, attrs, text) {
+  const svgTags = ["svg", "g", "line", "path", "circle", "rect", "text"];
+  const e = svgTags.includes(tag) ? document.createElementNS(SVGNS, tag) : document.createElement(tag);
+  for (const k in attrs || {}) e.setAttribute(k, attrs[k]);
+  if (text !== undefined) e.textContent = text;
+  return e;
+}
+function fmt(s) {
+  if (s < 0.0995) return (s * 1000).toFixed(0) + " ms";
+  if (s < 9.995) return s.toFixed(2) + " s";
+  if (s < 59.95) return s.toFixed(1) + " s";
+  if (s < 3600) return Math.floor(s / 60) + "m " + String(Math.round(s % 60)).padStart(2, "0") + "s";
+  return Math.floor(s / 3600) + "h " + String(Math.round((s % 3600) / 60)).padStart(2, "0") + "m";
+}
+function times(x) { return x >= 100 ? Math.round(x).toLocaleString() + "×" : x >= 10 ? x.toFixed(0) + "×" : x.toFixed(1) + "×"; }
+function statusText(r) {
+  if (!r) return "not run";
+  switch (r.status) {
+    case "infeasible": return "cannot run";
+    case "state-limit": return "did not finish: out of memory budget" + (r.gave_up_after_seconds ? " after " + fmt(r.gave_up_after_seconds) : "");
+    case "timeout": return "did not finish in " + fmt(r.limit_seconds);
+    case "running": return "running now…";
+    case "queued": return "queued";
+    case "error": return "error";
+    default: return r.status;
+  }
+}
+const ok = r => r && r.status === "ok";
+const pending = r => !r || r.status === "queued" || r.status === "running";
+const failed = r => r && !ok(r) && !pending(r);
+
+function renderTiles() {
+  const root = document.getElementById("tiles");
+  root.replaceChildren();
+  for (const c of DATA.cases) {
+    const runs = DATA.iterations.map(it => it.results[c.id]);
+    const firstIdx = runs.findIndex(ok);
+    let lastIdx = -1;
+    runs.forEach((r, i) => { if (ok(r)) lastIdx = i; });
+    const tile = el("div", { class: "card tile" });
+    tile.append(el("div", { class: "label" }, c.title));
+    tile.append(el("div", { class: "value" }, lastIdx >= 0 ? fmt(runs[lastIdx].seconds) : "–"));
+    let delta = "";
+    if (lastIdx > firstIdx && firstIdx >= 0) {
+      delta = times(runs[firstIdx].seconds / runs[lastIdx].seconds) + " faster than the first iteration that finished (" + fmt(runs[firstIdx].seconds) + ")";
+    } else if (lastIdx >= 0) {
+      delta = "only one iteration has finished this case";
+    }
+    tile.append(el("div", { class: "delta" }, delta));
+    root.append(tile);
+  }
+}
+
+function niceTicks(lo, hi) {
+  const all = [0.001, 0.01, 0.1, 1, 10, 60, 600, 3600, 36000];
+  return all.filter(t => t >= lo && t <= hi);
+}
+function tickLabel(t) {
+  if (t < 1) return (t * 1000) + " ms";
+  if (t < 60) return t + " s";
+  if (t < 3600) return (t / 60) + " min";
+  return (t / 3600) + " h";
+}
+
+function renderCharts() {
+  const root = document.getElementById("charts");
+  root.replaceChildren();
+  const n = DATA.iterations.length;
+  for (const c of DATA.cases) {
+    const card = el("div", { class: "card chart" });
+    card.append(el("h3", {}, c.title));
+    card.append(el("p", {}, c.detail));
+    root.append(card);
+    const W = Math.max(300, Math.floor(card.clientWidth - 32)), H = 250;
+    const m = { l: 52, r: 64, t: 30, b: 28 };
+    const runs = DATA.iterations.map(it => it.results[c.id]);
+    const secs = runs.filter(ok).map(r => r.seconds);
+    let lo = secs.length ? Math.min(...secs) : 0.1, hi = secs.length ? Math.max(...secs) : 10;
+    lo = Math.pow(10, Math.floor(Math.log10(lo) - 0.15));
+    hi = Math.pow(10, Math.log10(hi) + 0.25);
+    if (hi / lo < 30) hi = lo * 30;
+    const x = i => m.l + (n === 1 ? 0.5 : i / (n - 1)) * (W - m.l - m.r);
+    const y = s => m.t + (1 - (Math.log10(s) - Math.log10(lo)) / (Math.log10(hi) - Math.log10(lo))) * (H - m.t - m.b);
+    const svg = el("svg", { viewBox: `0 0 ${W} ${H}`, role: "img",
+      "aria-label": c.title + ": solve time per iteration, log scale. Values are in the table below." });
+    // "did not finish" strip
+    const stripY = 12;
+    const anyDnf = runs.some(failed);
+    if (anyDnf) svg.append(el("text", { x: W - m.r + 10, y: stripY + 4 }, "no result"));
+    for (const t of niceTicks(lo, hi)) {
+      svg.append(el("line", { class: "grid", x1: m.l, x2: W - m.r, y1: y(t), y2: y(t) }));
+      svg.append(el("text", { x: m.l - 8, y: y(t) + 4, "text-anchor": "end" }, tickLabel(t)));
+    }
+    for (let i = 0; i < n; i++) svg.append(el("text", { x: x(i), y: H - 8, "text-anchor": "middle" }, String(i)));
+    const cross = el("line", { class: "cross", y1: m.t - 8, y2: H - m.b });
+    svg.append(cross);
+    // line through consecutive finished iterations
+    let d = "", pen = false;
+    runs.forEach((r, i) => {
+      if (ok(r)) { d += (pen ? "L" : "M") + x(i).toFixed(1) + " " + y(r.seconds).toFixed(1); pen = true; } else pen = false;
+    });
+    if (d) svg.append(el("path", { class: "line", d }));
+    const okIdx = runs.map((r, i) => ok(r) ? i : -1).filter(i => i >= 0);
+    runs.forEach((r, i) => {
+      if (ok(r)) svg.append(el("circle", { class: "dot", cx: x(i), cy: y(r.seconds), r: 5 }));
+      else if (failed(r)) svg.append(el("circle", { class: "dnf", cx: x(i), cy: stripY, r: 4 }));
+    });
+    // direct labels: first and last finished point only
+    const labelAt = (i, above) => {
+      const r = runs[i];
+      const tx = Math.min(x(i) + 9, W - 4), ty = y(r.seconds) + (above ? -10 : 4);
+      svg.append(el("text", { class: "val", x: above ? x(i) : tx, y: ty, "text-anchor": above ? "middle" : "start" }, fmt(r.seconds)));
+    };
+    if (okIdx.length) {
+      labelAt(okIdx[okIdx.length - 1], false);
+      if (okIdx.length > 1) labelAt(okIdx[0], true);
+    }
+    // hover columns
+    const step = n > 1 ? (W - m.l - m.r) / (n - 1) : W;
+    runs.forEach((r, i) => {
+      const col = el("rect", { class: "col", x: x(i) - step / 2, y: 0, width: step, height: H, tabindex: 0,
+        "aria-label": `${i}. ${DATA.iterations[i].label}: ${ok(r) ? fmt(r.seconds) : statusText(r)}` });
+      const show = ev => setHover(i, c.id, ev);
+      col.addEventListener("pointermove", show);
+      col.addEventListener("focus", show);
+      col.addEventListener("pointerleave", () => setHover(null));
+      col.addEventListener("blur", () => setHover(null));
+      svg.append(col);
+    });
+    svg._cross = cross; svg._x = x;
+    card.append(svg);
+    card.append(el("div", { class: "meta" }, "x axis: iteration number (see the table below)"));
+  }
+}
+
+function setHover(i, caseId, ev) {
+  hover = i;
+  document.querySelectorAll(".chart svg").forEach(svg => {
+    if (i === null) svg._cross.style.opacity = 0;
+    else { svg._cross.setAttribute("x1", svg._x(i)); svg._cross.setAttribute("x2", svg._x(i)); svg._cross.style.opacity = 1; }
+  });
+  document.querySelectorAll("#table tbody tr").forEach((tr, k) => tr.classList.toggle("hl", k === i));
+  const tip = document.getElementById("tip");
+  if (i === null) { tip.style.display = "none"; return; }
+  const it = DATA.iterations[i], r = it.results[caseId];
+  tip.replaceChildren();
+  tip.append(el("div", { class: "t-val" }, ok(r) ? fmt(r.seconds) : statusText(r)));
+  tip.append(el("div", { class: "t-name" }, `${i}. ${it.label}`));
+  if (ok(r)) {
+    let prev = null;
+    for (let k = i - 1; k >= 0; k--) if (ok(DATA.iterations[k].results[caseId])) { prev = DATA.iterations[k].results[caseId]; break; }
+    const extra = [];
+    if (prev) extra.push(times(prev.seconds / r.seconds) + " vs previous");
+    extra.push(r.threads + (r.threads === 1 ? " thread" : " threads"));
+    tip.append(el("div", { class: "t-extra" }, extra.join(" · ")));
+  }
+  tip.style.display = "block";
+  let px, py;
+  if (ev && ev.clientX !== undefined && ev.type !== "focus") { px = ev.clientX; py = ev.clientY; }
+  else { const b = ev.target.getBoundingClientRect(); px = b.left + b.width / 2; py = b.top + 40; }
+  const tw = tip.offsetWidth, th = tip.offsetHeight;
+  tip.style.left = Math.max(8, Math.min(window.innerWidth - tw - 8, px + 14)) + "px";
+  tip.style.top = Math.max(8, Math.min(window.innerHeight - th - 8, py + 14)) + "px";
+}
+
+function renderTable() {
+  const t = document.getElementById("table");
+  t.replaceChildren();
+  const head = el("tr");
+  head.append(el("th", {}, "#"), el("th", {}, "Iteration"));
+  for (const c of DATA.cases) head.append(el("th", { class: "num" }, c.title.replace(/^.*: /, "")));
+  const thead = el("thead"); thead.append(head); t.append(thead);
+  const body = el("tbody");
+  DATA.iterations.forEach((it, i) => {
+    const tr = el("tr");
+    tr.append(el("td", { class: "idx" }, String(i)));
+    const td = el("td");
+    td.append(el("div", {}, it.label));
+    if (it.note) td.append(el("div", { class: "what" }, it.note));
+    const bits = [];
+    if (it.commit) bits.push("commit " + it.commit);
+    if (it.recorded_at) bits.push(it.recorded_at);
+    if (bits.length) td.append(el("div", { class: "x" }, bits.join(" · ")));
+    tr.append(td);
+    for (const c of DATA.cases) {
+      const r = it.results[c.id];
+      const cell = el("td", { class: "num" });
+      if (ok(r)) {
+        cell.append(el("div", {}, fmt(r.seconds)));
+        let prev = null;
+        for (let k = i - 1; k >= 0; k--) if (ok(DATA.iterations[k].results[c.id])) { prev = DATA.iterations[k].results[c.id]; break; }
+        if (prev) cell.append(el("div", { class: "x" }, times(prev.seconds / r.seconds) + " vs previous"));
+      } else {
+        cell.append(el("div", { class: "muted" }, statusText(r)));
+      }
+      tr.append(cell);
+    }
+    body.append(tr);
+  });
+  t.append(body);
+  // every iteration must agree on the answer
+  const foot = el("tr");
+  foot.append(el("td"), el("td", {}, "Answer (exact EV), and agreement across iterations"));
+  for (const c of DATA.cases) {
+    const evs = DATA.iterations.map(it => it.results[c.id]).filter(ok).map(r => r.ev);
+    const cell = el("td", { class: "num" });
+    if (evs.length) {
+      const spread = Math.max(...evs) - Math.min(...evs);
+      cell.append(el("div", {}, (evs[evs.length - 1] >= 0 ? "+" : "") + evs[evs.length - 1].toFixed(12)));
+      cell.append(el("div", { class: "x" }, evs.length > 1 ? `${evs.length} iterations within ${spread.toExponential(0)}` : "one result so far"));
+    }
+    foot.append(cell);
+  }
+  const tfoot = el("tfoot"); tfoot.append(foot); t.append(tfoot);
+}
+
+function render() {
+  document.getElementById("machine").textContent = "Machine: " + DATA.machine;
+  renderTiles(); renderCharts(); renderTable();
+}
+
+let lastJson = "";
+async function refresh() {
+  try {
+    const res = await fetch("api/history", { cache: "no-store" });
+    const text = await res.text();
+    const payload = JSON.parse(text);
+    const btn = document.getElementById("runbtn");
+    btn.disabled = !!payload.busy;
+    document.getElementById("runstatus").textContent = payload.busy ? payload.busy : (payload.last_error || "");
+    const j = JSON.stringify(payload.history);
+    if (j !== lastJson && hover === null) { lastJson = j; DATA = payload.history; render(); }
+  } catch (e) {
+    document.getElementById("runstatus").textContent = "Could not reach the benchmark server.";
+  }
+}
+document.getElementById("runform").addEventListener("submit", async ev => {
+  ev.preventDefault();
+  const body = JSON.stringify({ label: document.getElementById("label").value, note: document.getElementById("note").value });
+  const res = await fetch("api/run", { method: "POST", headers: { "Content-Type": "application/json" }, body });
+  if (res.ok) { document.getElementById("label").value = ""; document.getElementById("note").value = ""; }
+  refresh();
+});
+let resizeTimer = null;
+window.addEventListener("resize", () => { clearTimeout(resizeTimer); resizeTimer = setTimeout(() => DATA && renderCharts(), 150); });
+refresh();
+setInterval(refresh, 3000);
+</script>
+</body>
+</html>
