@@ -8,6 +8,7 @@
 
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <cmath>
 #include <cstdint>
 #include <cstring>
@@ -425,6 +426,33 @@ inline void parallel_for(size_t n, int threads, F &&f) {
   std::vector<std::thread> th;
   th.reserve(T);
   for (size_t t = 0; t < T; ++t) th.emplace_back([&, t] { f(int(t), n * t / T, n * (t + 1) / T); });
+  for (auto &x : th) x.join();
+}
+
+// Benchmark switch: give every thread one fixed, equal share of the work.
+inline bool g_static_schedule = false;
+
+// Run f(chunk) for chunk = 0..nchunks-1, chunks handed out one at a time.
+// Unlike equal static shares, this keeps fast cores busy when some cores are
+// slower (efficiency cores) or shared with other work.
+template <class F>
+inline void parallel_chunks(size_t nchunks, int threads, F &&f) {
+  if (threads <= 1 || nchunks <= 1) {
+    for (size_t i = 0; i < nchunks; ++i) f(i);
+    return;
+  }
+  std::atomic<size_t> next{0};
+  size_t T = std::min<size_t>(threads, nchunks);
+  std::vector<std::thread> th;
+  th.reserve(T);
+  for (size_t t = 0; t < T; ++t)
+    th.emplace_back([&, t] {
+      if (g_static_schedule) {  // benchmark switch: one fixed share per thread
+        for (size_t i = nchunks * t / T; i < nchunks * (t + 1) / T; ++i) f(i);
+        return;
+      }
+      for (size_t i; (i = next.fetch_add(1, std::memory_order_relaxed)) < nchunks;) f(i);
+    });
   for (auto &x : th) x.join();
 }
 

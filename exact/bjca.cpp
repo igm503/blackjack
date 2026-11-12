@@ -280,7 +280,8 @@ static int cmd_bench(const Args &a) {
 //             bfs-dealer    + breadth-first dealer evaluation, one thread
 //             threads       + every layer split across all threads
 //             shared-plan   + one forward pass per pair shared by all upcards
-//             current       + SIMD dealer evaluation (whatever the tree does today)
+//             simd          + SIMD dealer evaluation
+//             current       + work handed to threads in small chunks (whatever the tree does today)
 static int cmd_bench_case(const Args &a) {
   Rules rules;  // S17, DAS, double any two, one card to split aces, no surrender
   rules.resplit_aces = false;
@@ -290,8 +291,10 @@ static int cmd_bench_case(const Args &a) {
   g_dealer_depth_first = false;
   g_dealer_simd = true;
   bool share_plans = true;
+  g_static_schedule = a.variant != "current";
   if (a.variant == "threads") g_dealer_simd = false, share_plans = false;
   else if (a.variant == "shared-plan") g_dealer_simd = false;
+  else if (a.variant == "simd") ;
   else if (a.variant == "carry-all") algo = SplitAlgo::CarryAll, threads = 1, g_dealer_depth_first = true;
   else if (a.variant == "settle-early") algo = SplitAlgo::TopDown, threads = 1, g_dealer_depth_first = true;
   else if (a.variant == "layered") threads = 1, g_dealer_depth_first = true, g_dealer_simd = false, share_plans = false;

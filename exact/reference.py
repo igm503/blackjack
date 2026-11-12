@@ -39,7 +39,13 @@ def value(cards):
     return (pips + 10 if soft else pips), soft
 
 
+class TooBig(Exception):
+    """The brute force exceeded its state budget."""
+
+
 class Reference:
+    state_limit = None  # optional cap on memoised split states
+
     def __init__(self, rules: Rules, unseen: tuple, up: int, number=Fraction):
         """unseen: counts for cards 1..10 (index 0 = ace) the player cannot see,
         hole card included. up: dealer upcard 1..10."""
@@ -246,6 +252,8 @@ class Reference:
         key = ("H", drawn, done, cards, pending, s)
         if key in self._split:
             return self._split[key]
+        if self.state_limit and len(self._split) > self.state_limit:
+            raise TooBig()
         total, soft = value(cards)
         best = self.after(drawn, tuple(sorted(done + ((total, 1),))), pair, pending, s)
         locked = pair == 1 and not self.r.hit_split_aces
@@ -280,9 +288,10 @@ class Reference:
         return best
 
 
-def analyze_hand(rules: Rules, unseen, hand, up, number=Fraction):
+def analyze_hand(rules: Rules, unseen, hand, up, number=Fraction, state_limit=None):
     """Action values for a fresh hand. unseen excludes the hand and upcard."""
     ref = Reference(rules, tuple(unseen), up, number)
+    ref.state_limit = state_limit
     zero = (0,) * 10
     stand, hit, dbl = ref.hand_actions(tuple(hand), zero)
     split = None

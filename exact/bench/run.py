@@ -92,10 +92,17 @@ VARIANTS = [
                 "done once per pair and its ten upcards are evaluated side by side. (Whole-round cases only.)",
     },
     {
-        "variant": "current",
+        "variant": "simd",
         "label": "SIMD dealer evaluation",
         "note": "Four card compositions are pushed through the dealer trie per pass (one vector multiply "
                 "per trie node), and the value loops read children through small dense tables.",
+    },
+    {
+        "variant": "current",
+        "label": "Dynamic scheduling",
+        "note": "Work is handed to threads in small chunks instead of one fixed share each, so the fast "
+                "cores are not left waiting for the efficiency cores. The forward pass also precomputes "
+                "what each node sends to its children once instead of once per card.",
     },
 ]
 
@@ -238,7 +245,7 @@ def backfill(timeout: float):
 
     # The multi-threaded build needs the machine to itself; the single-threaded
     # iterations can then share it (two memory-hungry hash solvers in series).
-    for name in ("threads", "shared-plan", "current"):
+    for name in ("threads", "shared-plan", "simd", "current"):
         go(name)
     with ThreadPoolExecutor(3) as pool:
         futures = [pool.submit(go, "bfs-dealer"), pool.submit(go, "layered"),

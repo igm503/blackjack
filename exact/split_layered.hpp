@@ -107,7 +107,16 @@ class LayeredSplitSolver {
     std::vector<uint32_t> w;  // one bit per (m,s) "needs a card" state, plus GNEED
     std::vector<uint32_t> h;  // NH per node: 3+ card hand states
     std::vector<uint16_t> f;  // NH per node: two-card hand states, by second card
+    // Scratch for the forward pass only (see prepare_node); freed afterwards.
+    std::vector<uint32_t> thit;  // NH per node: hand states that may take a card
+    std::vector<uint32_t> tdbl, tfh, twre;  // per node: bit sets, see prepare_node
     size_t size() const { return key.size(); }
+    void drop_scratch() {
+      std::vector<uint32_t>().swap(thit);
+      std::vector<uint32_t>().swap(tdbl);
+      std::vector<uint32_t>().swap(tfh);
+      std::vector<uint32_t>().swap(twre);
+    }
   };
 
   // Result of the forward pass: the reachable states of every layer.
@@ -163,10 +172,17 @@ class LayeredSplitSolver {
     for (int k = 0;; ++k) {
       Layer &cur = P.layers[k];
       std::atomic<uint64_t> tot{0};
-      parallel_for(cur.size(), cur.size() >= 4096 ? threads_ : 1, [&](int, size_t a, size_t b) {
+      const size_t CH = 8192, ncur = cur.size();
+      cur.thit.resize(ncur * NH_);
+      cur.tdbl.resize(ncur);
+      cur.tfh.resize(ncur);
+      cur.twre.resize(ncur);
+      parallel_chunks((ncur + CH - 1) / CH, ncur >= 4096 ? threads_ : 1, [&](size_t ci) {
+        size_t a = ci * CH, b = std::min(ncur, a + CH);
         uint64_t t = 0;
         for (size_t i = a; i < b; ++i) {
           close_node(cur, i);
+          prepare_node(pc.pair, cur, i);
           uint32_t w = cur.w[i];
           t += ((w & GNEED) ? 6 : 0) + __builtin_popcount(w & WMASK);
           for (int hc = 0; hc < NH_; ++hc)
@@ -180,6 +196,7 @@ class LayeredSplitSolver {
       P.max_vals = std::max<uint64_t>(P.max_vals, tot.load());
       Layer next;
       build_next(pc, cur, k, next);
+      cur.drop_scratch();
       if (pc.overflow.load()) throw std::overflow_error("split key overflow");
       if (next.size() == 0) break;
       P.layers.push_back(std::move(next));
@@ -227,8 +244,10 @@ class LayeredSplitSolver {
       size_t n = cur.size();
       int T = n >= 1024 ? threads : 1;
       // value offsets: per-chunk counts, then a short serial prefix
-      std::vector<uint64_t> chunk_tot(size_t(std::max(T, 1)) + 1, 0);
-      parallel_for(n, T, [&](int tid, size_t a, size_t b) {
+      const size_t CH = 2048, nch = (n + CH - 1) / CH;
+      std::vector<uint64_t> chunk_base(nch + 1, 0);
+      parallel_chunks(nch, T, [&](size_t ci) {
+        size_t a = ci * CH, b = std::min(n, a + CH);
         uint64_t t = 0;
         for (size_t i = a; i < b; ++i) {
           uint32_t w = cur.w[i];
@@ -240,11 +259,12 @@ class LayeredSplitSolver {
           cv.off[i] = t;  // relative to the chunk start for now
           t += uint64_t(rel);
         }
-        chunk_tot[size_t(tid) + 1] = t;
+        chunk_base[ci + 1] = t;
       });
-      for (size_t t = 1; t < chunk_tot.size(); ++t) chunk_tot[t] += chunk_tot[t - 1];
-      parallel_for(n, T, [&](int tid, size_t a, size_t b) {
-        uint64_t base = chunk_tot[size_t(tid)];
+      for (size_t ci = 1; ci <= nch; ++ci) chunk_base[ci] += chunk_base[ci - 1];
+      parallel_chunks(nch, T, [&](size_t ci) {
+        size_t a = ci * CH, b = std::min(n, a + CH);
+        uint64_t base = chunk_base[ci];
         if (base)
           for (size_t i = a; i < b; ++i) cv.off[i] += base;
         size_t de = 0, ds = 0;
@@ -378,9 +398,37 @@ class LayeredSplitSolver {
     l.w[i] = w;
   }
 
+  // Everything a node pushes to its children that does not depend on which
+  // card is drawn, worked out once per node instead of once per card:
+  //   thit[hc]  hand states of group hc that may take another card
+  //   tdbl      groups holding a two-card hand that may double
+  //   tfh       groups that receive a new two-card hand (from "needs a card" states)
+  //   twre      "needs a card" states created if the card is another pair card (resplit)
+  void prepare_node(const PairInfo &pi, Layer &l, size_t i) const {
+    uint32_t fh = 0, wre = 0, dblm = 0;
+    for (uint32_t wi = l.w[i] & WMASK; wi; wi &= wi - 1) {
+      int ms = __builtin_ctz(wi);
+      fh |= 1u << hcanon_[ms];
+      if (cs_[ms] > 0 && pi.resplit_ok) wre |= 1u << ms_[cm_[ms] + 1][cs_[ms] - 1];
+    }
+    for (int hc = 0; hc < NH_; ++hc) {
+      uint32_t all = l.h[i * NH_ + hc];
+      bool dbl = false;
+      for (uint32_t fm = l.f[i * NH_ + hc]; fm; fm &= fm - 1) {
+        int c0 = __builtin_ctz(fm);
+        all |= 1u << pi.fbit[c0];
+        dbl |= pi.fdbl[c0];
+      }
+      l.thit[i * NH_ + hc] = pi.locked ? 0u : (all & HITTABLE);
+      if (dbl) dblm |= 1u << hc;
+    }
+    l.tfh[i] = fh;
+    l.twre[i] = wre;
+    l.tdbl[i] = dblm;
+  }
+
   // Marks that node i of layer k pushes onto its child reached by drawing c.
   bool contrib(PlanCtx &px, const Layer &l, size_t i, int c, int k, uint32_t &w, uint32_t *h, uint16_t *f) const {
-    const PairInfo &pi = px.pair;
     uint64_t key = l.key[i];
     int drawn = field(key, c);
     if (px.S[c] - drawn <= 0) return false;
@@ -390,28 +438,18 @@ class LayeredSplitSolver {
     }
     if (drawn == (1 << FW_[c]) - 1) px.overflow.store(true);
     bool any = false;
-    uint32_t wi = l.w[i] & WMASK;
-    while (wi) {
-      int ms = __builtin_ctz(wi);
-      wi &= wi - 1;
-      f[hcanon_[ms]] |= uint16_t(1u << c);
+    if (uint32_t fh = l.tfh[i]) {
       any = true;
-      if (c == pi.p && cs_[ms] > 0 && pi.resplit_ok) w |= 1u << ms_[cm_[ms] + 1][cs_[ms] - 1];
+      for (; fh; fh &= fh - 1) f[__builtin_ctz(fh)] |= uint16_t(1u << c);
+      if (c == px.pair.p) w |= l.twre[i];
     }
+    const uint32_t dblm = l.tdbl[i];
+    const uint32_t *hit = &l.thit[i * NH_];
     for (int hc = 0; hc < NH_; ++hc) {
-      uint32_t hm = l.h[i * NH_ + hc];
-      uint32_t fm = l.f[i * NH_ + hc];
-      if (!(hm | fm)) continue;
-      uint32_t all = hm;
-      bool dbl = false;
-      while (fm) {
-        int c0 = __builtin_ctz(fm);
-        fm &= fm - 1;
-        all |= 1u << pi.fbit[c0];
-        dbl |= pi.fdbl[c0];
-      }
+      if (!hit[hc]) continue;  // (a hand that may double may also hit)
       bool bust = false;
-      uint32_t nh = pi.locked ? 0u : shift(all & HITTABLE, c, bust);
+      uint32_t nh = shift(hit[hc], c, bust);
+      bool dbl = (dblm >> hc) & 1;
       if (nh) {
         h[hc] |= nh;
         any = true;
@@ -476,34 +514,37 @@ class LayeredSplitSolver {
   void build_next(PlanCtx &px, const Layer &l, int k, Layer &next) const {
     size_t n = l.size();
     int T = n >= 4096 ? threads_ : 1;
-    std::vector<uint64_t> bound(T + 1);
+    // Split the key space into ranges of roughly equal work (by quantiles of
+    // this layer's keys); more ranges than threads so they balance out.
+    size_t R = T == 1 ? 1 : g_static_schedule ? size_t(T) : std::min<size_t>(n / 1024, size_t(T) * 8);
+    std::vector<uint64_t> bound(R + 1);
     bound[0] = 0;
-    bound[T] = ~0ull;
-    for (int t = 1; t < T; ++t) bound[t] = l.key[n * t / T];
-    std::vector<Out> outs(T);
-    parallel_for(size_t(T), T, [&](int, size_t a, size_t b) {
-      for (size_t t = a; t < b; ++t) merge_range(px, l, k, bound[t], bound[t + 1], outs[t]);
-    });
-    if (T == 1) {
+    bound[R] = ~0ull;
+    for (size_t r = 1; r < R; ++r) bound[r] = l.key[n * r / R];
+    std::vector<Out> outs(R);
+    parallel_chunks(R, T, [&](size_t r) { merge_range(px, l, k, bound[r], bound[r + 1], outs[r]); });
+    if (R == 1) {
       next.key.swap(outs[0].key);
       next.w.swap(outs[0].w);
       next.h.swap(outs[0].h);
       next.f.swap(outs[0].f);
       return;
     }
-    size_t tot = 0;
-    for (auto &o : outs) tot += o.key.size();
-    next.key.reserve(tot);
-    next.w.reserve(tot);
-    next.h.reserve(tot * NH_);
-    next.f.reserve(tot * NH_);
-    for (auto &o : outs) {
-      next.key.insert(next.key.end(), o.key.begin(), o.key.end());
-      next.w.insert(next.w.end(), o.w.begin(), o.w.end());
-      next.h.insert(next.h.end(), o.h.begin(), o.h.end());
-      next.f.insert(next.f.end(), o.f.begin(), o.f.end());
+    std::vector<size_t> at(R + 1, 0);
+    for (size_t r = 0; r < R; ++r) at[r + 1] = at[r] + outs[r].key.size();
+    size_t tot = at[R];
+    next.key.resize(tot);
+    next.w.resize(tot);
+    next.h.resize(tot * NH_);
+    next.f.resize(tot * NH_);
+    parallel_chunks(R, T, [&](size_t r) {
+      Out &o = outs[r];
+      std::copy(o.key.begin(), o.key.end(), next.key.begin() + at[r]);
+      std::copy(o.w.begin(), o.w.end(), next.w.begin() + at[r]);
+      std::copy(o.h.begin(), o.h.end(), next.h.begin() + at[r] * NH_);
+      std::copy(o.f.begin(), o.f.end(), next.f.begin() + at[r] * NH_);
       o = Out{};
-    }
+    });
   }
 
   [[noreturn]] static void missing(const char *what) {

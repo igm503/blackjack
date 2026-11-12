@@ -86,7 +86,11 @@
   table { border-collapse: collapse; width: 100%; font-size: 13.5px; }
   th, td { text-align: left; padding: 10px 12px; border-bottom: 1px solid var(--border); vertical-align: top; }
   th { color: var(--text-secondary); font-weight: 600; font-size: 12.5px; white-space: nowrap; }
-  td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
+  td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
+  td.num .t { white-space: nowrap; }
+  td.num .muted { font-size: 12.5px; max-width: 17ch; margin-left: auto; }
+  th.num { white-space: normal; min-width: 96px; }
+  td.name { min-width: 300px; }
   td.idx { color: var(--text-muted); font-variant-numeric: tabular-nums; }
   td .what { color: var(--text-secondary); font-size: 12.5px; max-width: 52ch; margin-top: 2px; }
   td .x { color: var(--text-muted); font-size: 12px; }
@@ -170,7 +174,7 @@ function statusText(r) {
   if (!r) return "not run";
   switch (r.status) {
     case "infeasible": return "cannot run";
-    case "state-limit": return "did not finish: out of memory budget" + (r.gave_up_after_seconds ? " after " + fmt(r.gave_up_after_seconds) : "");
+    case "state-limit": return "ran out of memory" + (r.gave_up_after_seconds ? " after " + fmt(r.gave_up_after_seconds) : "");
     case "timeout": return "did not finish in " + fmt(r.limit_seconds);
     case "running": return "running now…";
     case "queued": return "queued";
@@ -327,7 +331,7 @@ function renderTable() {
   DATA.iterations.forEach((it, i) => {
     const tr = el("tr");
     tr.append(el("td", { class: "idx" }, String(i)));
-    const td = el("td");
+    const td = el("td", { class: "name" });
     td.append(el("div", {}, it.label));
     if (it.note) td.append(el("div", { class: "what" }, it.note));
     const bits = [];
@@ -339,7 +343,7 @@ function renderTable() {
       const r = it.results[c.id];
       const cell = el("td", { class: "num" });
       if (ok(r)) {
-        cell.append(el("div", {}, fmt(r.seconds)));
+        cell.append(el("div", { class: "t" }, fmt(r.seconds)));
         let prev = null;
         for (let k = i - 1; k >= 0; k--) if (ok(DATA.iterations[k].results[c.id])) { prev = DATA.iterations[k].results[c.id]; break; }
         if (prev) cell.append(el("div", { class: "x" }, times(prev.seconds / r.seconds) + " vs previous"));
@@ -360,7 +364,8 @@ function renderTable() {
     if (evs.length) {
       const spread = Math.max(...evs) - Math.min(...evs);
       cell.append(el("div", {}, (evs[evs.length - 1] >= 0 ? "+" : "") + evs[evs.length - 1].toFixed(12)));
-      cell.append(el("div", { class: "x" }, evs.length > 1 ? `${evs.length} iterations within ${spread.toExponential(0)}` : "one result so far"));
+      const agree = spread === 0 ? "identical to the last bit" : "agree to " + spread.toExponential(0);
+      cell.append(el("div", { class: "x" }, evs.length > 1 ? `${evs.length} iterations, ${agree}` : "one result so far"));
     }
     foot.append(cell);
   }

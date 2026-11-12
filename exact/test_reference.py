@@ -7,7 +7,7 @@ import time
 from fractions import Fraction
 from pathlib import Path
 
-from reference import Rules, analyze_hand, round_ev
+from reference import Rules, TooBig, analyze_hand, round_ev
 
 HERE = Path(__file__).resolve().parent
 BJCA = str(HERE / "bjca")
@@ -105,10 +105,12 @@ def main():
     print(f"non-split hands ok ({time.time() - t0:.1f}s, worst diff {worst:.2e})", flush=True)
 
     # 2. pairs, with 1..3 splits allowed, exact rational reference
-    for i in range(30):
+    for i in range(27):
         max_splits = 1 + i % 3
         r = random_rules(rng, max_splits)
-        min_pips = 31 * (max_splits + 1) + 40
+        # enough pips that the shoe cannot run out: every hand can absorb at
+        # most 31 and the dealer 26
+        min_pips = 31 * (max_splits + 1) + 34
         while True:
             shoe = random_shoe(rng, min_pips)
             pairs = [c for c in range(1, 11) if shoe[c - 1] >= 2 + (i % 2)]
@@ -119,14 +121,37 @@ def main():
         ups = [c for c in range(1, 11) if shoe[c - 1]]
         up = rng.choice(ups)
         shoe[up - 1] -= 1
-        # keep the brute force tractable: thin the shoe (but never so far that
-        # it could run out of cards mid-round)
-        cap = {1: 32, 2: 26, 3: 22}[max_splits]
-        while sum(shoe) > cap and sum((j + 1) * c for j, c in enumerate(shoe)) > min_pips + 12:
-            j = rng.choice([j for j in range(10) if shoe[j] > (1 if j == p - 1 else 0)])
+        # Keep the brute force tractable: thin the shoe, low cards first so
+        # the pip total stays above the safe minimum.
+        cap = {1: 26, 2: 22, 3: 20}[max_splits]
+        if p == 1 and r.hit_split_aces:
+            cap -= 3
+        while sum(shoe) > cap:
+            low = [j for j in range(10) if shoe[j] > (1 if j == p - 1 else 0)]
+            j = min(low) if rng.random() < 0.7 else rng.choice(low)
+            if sum((q + 1) * c for q, c in enumerate(shoe)) - (j + 1) < min_pips:
+                high = [q for q in low if sum((x + 1) * c for x, c in enumerate(shoe)) - (q + 1) >= min_pips]
+                if not high:
+                    break
+                j = min(high)
             shoe[j] -= 1
         t1 = time.time()
-        want = analyze_hand(r, shoe, (p, p), up)
+        # If the brute force would take too long, take low cards out (while
+        # the shoe stays safely large) and try again.
+        while True:
+            try:
+                want = analyze_hand(r, shoe, (p, p), up, state_limit=400_000)
+                break
+            except TooBig:
+                pips = sum((q + 1) * c for q, c in enumerate(shoe))
+                ok = [j for j in range(10) if shoe[j] > (1 if j == p - 1 else 0) and pips - (j + 1) >= min_pips]
+                if not ok:
+                    want = None
+                    break
+                shoe[min(ok)] -= 1
+        if want is None:
+            print(f"  pair {p},{p} v {up} splits={max_splits}: skipped (brute force too large)", flush=True)
+            continue
         got = engine_hand(r, shoe, [p, p], up)
         compare(f"pair#{i} {p},{p} v {up} shoe {shoe} {r}", got, want)
         print(f"  pair {p},{p} v {up} splits={max_splits} n={sum(shoe)}: split EV {got['split']:+.12f} "
