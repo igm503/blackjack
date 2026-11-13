@@ -14,6 +14,8 @@
 #include <cstring>
 #include <limits>
 #include <map>
+#include <memory>
+#include <tuple>
 #include <stdexcept>
 #include <thread>
 #include <unordered_map>
@@ -94,13 +96,13 @@ inline bool g_dealer_depth_first = false;
 // Benchmark switch: let the layered solver batch dealer evaluations with SIMD.
 inline bool g_dealer_simd = true;
 
+struct DealerUnion;
 struct DealerTable {
   std::array<DealerProgram, NR> prog;
   bool h17;
+  std::shared_ptr<const DealerUnion> uni;  // all upcards at once (set by make_union)
 
-  explicit DealerTable(bool h17_) : h17(h17_) {
-    for (int u = 0; u < NR; ++u) build(u);
-  }
+  explicit DealerTable(bool h17_);
 
  private:
   static bool must_hit(int pips, int aces, bool h17) {
@@ -315,6 +317,264 @@ inline void dealer_probs_batch(const DealerTable &t, const Counts *const c[W], c
     }
     out[l][5] = 1.0 - s;
   }
+}
+
+// ---------------------------------------------------------------------------
+// Dealer, all upcards at once
+// ---------------------------------------------------------------------------
+// With B the cards unseen before the upcard is taken out (so the upcard u
+// itself is one of them), the unseen cards against upcard u are B - u, and for
+// a multiset M of dealer cards
+//     prod_r ff(B_r - [r = u], M_r) = prod_r ff(B_r, M_r) * (B_u - M_u) / B_u.
+// So one walk over the union of all upcards' tries yields every upcard's
+// numerators; an upcard only adds its own sums over its finishing hands,
+// grouped by how many cards of its own rank the hand holds.
+//
+// The trie is ordered low ranks first and split at a rank `cut`: nodes whose
+// cards are all <= cut ("stable") depend only on the counts of those ranks.
+// Neighbouring card sets in a sorted layer share those counts, so the stable
+// part is computed once per run of nodes and only the rest per node.
+struct DealerUnion {
+  int cut = 4;  // highest stable rank (index); 4 = the fives
+  int ns = 0, nn = 0;              // nodes [1, ns) stable, [ns, nn) varying; node 0 = empty prefix
+  std::vector<uint16_t> parent;    // per node
+  std::vector<uint8_t> wslot;      // per node: woff[rank] + (cards of that rank already held)
+  int woff[NR + 1];
+  int maxdepth = 0;
+  struct Group {                   // finishing hands of one upcard with equal (own-rank count, size, total)
+    uint8_t up, k, size, total;
+    uint32_t sb, se, vb, ve;       // ranges in the stable / varying final lists
+  };
+  std::vector<Group> groups;       // sorted by upcard
+  int gbegin[NR + 1];
+  std::vector<uint16_t> sfin_node, vfin_node;
+  std::vector<double> sfin_mult, vfin_mult;
+  int maxk_up = 0;                 // largest own-rank count + 1
+
+  DealerUnion() = default;
+  DealerUnion(bool h17, int cut_) : cut(cut_) { build(h17); }
+
+  // Stable part for base composition B: node numerators and group sums.
+  void stable(const Counts &B, double *sval, double *gstable) const {
+    double w[MAX_UNION_W];
+    for (int r = 0; r <= cut; ++r) {
+      int k = 0;
+      for (int i = woff[r]; i < woff[r + 1]; ++i, ++k) w[i] = B[r] > k ? double(B[r] - k) : 0.0;
+    }
+    sval[0] = 1.0;
+    for (int i = 1; i < ns; ++i) sval[i] = sval[parent[i]] * w[wslot[i]];
+    const size_t ng = groups.size();
+    for (size_t g = 0; g < ng; ++g) {
+      const Group &gr = groups[g];
+      double s0 = 0, s1 = 0;
+      uint32_t j = gr.sb;
+      for (; j + 2 <= gr.se; j += 2) {
+        s0 += sfin_mult[j] * sval[sfin_node[j]];
+        s1 += sfin_mult[j + 1] * sval[sfin_node[j + 1]];
+      }
+      if (j < gr.se) s0 += sfin_mult[j] * sval[sfin_node[j]];
+      gstable[g] = s0 + s1;
+    }
+  }
+
+  // The rest, for W card sets that share the stable part. B[l] are the base
+  // compositions (n + 1 cards each). For every requested upcard and lane,
+  // writes the six stand values (see stand_values) to out[lane][j].
+  template <int W>
+  void varying(const double *sval, const double *gstable, const Counts *const B[W], int n, const int *ups,
+               int nup, double (*out)[NR][6]) const;
+
+  static constexpr int MAX_UNION_W = 128;
+  static constexpr int MAX_UNION_NODES = 2048;
+
+ private:
+  static bool must_hit(int pips, int aces, bool h17) {
+    bool soft = aces > 0 && pips <= 11;
+    int total = soft ? pips + 10 : pips;
+    return total < 17 || (total == 17 && soft && h17);
+  }
+  static void enumerate(bool h17, int pips, int aces, int ncards, Counts &m, std::map<Counts, double> &finals) {
+    for (int r = 0; r < NR; ++r) {
+      int np = pips + r + 1, na = aces + (r == ACE);
+      if (np > 21) break;
+      m[r]++;
+      if (must_hit(np, na, h17)) {
+        enumerate(h17, np, na, ncards + 1, m, finals);
+      } else {
+        bool natural = ncards == 1 && np == 11 && na == 1;
+        if (!natural) finals[m] += 1.0;
+      }
+      m[r]--;
+    }
+  }
+  void build(bool h17) {
+    struct TNode {
+      int parent, depth, rank, k;
+    };
+    std::vector<TNode> trie{{-1, 0, -1, 0}};
+    std::map<std::pair<int, int>, int> edge;
+    Counts maxk{};
+    struct Fin {
+      int node, up, k, size, total;
+      double mult;
+    };
+    std::vector<Fin> fins;
+    for (int u = 0; u < NR; ++u) {
+      std::map<Counts, double> finals;
+      Counts m{};
+      enumerate(h17, u + 1, u == ACE, 1, m, finals);
+      for (auto &[cnt, mult] : finals) {
+        int node = 0, depth = 0;
+        for (int r = 0; r < NR; ++r)  // low ranks first
+          for (int i = 0; i < cnt[r]; ++i) {
+            auto key = std::make_pair(node, r);
+            auto it = edge.find(key);
+            if (it == edge.end()) {
+              trie.push_back({node, depth + 1, r, i});
+              it = edge.emplace(key, int(trie.size()) - 1).first;
+            }
+            node = it->second;
+            ++depth;
+            maxk[r] = std::max(maxk[r], i + 1);
+          }
+        int pips = u + 1, aces = u == ACE;
+        for (int r = 0; r < NR; ++r) pips += cnt[r] * (r + 1), aces += (r == ACE) * cnt[r];
+        int total = (aces > 0 && pips <= 11) ? pips + 10 : pips;
+        fins.push_back({node, u, cnt[u], depth, total, mult});
+        maxk_up = std::max(maxk_up, cnt[u] + 1);
+        maxdepth = std::max(maxdepth, depth);
+      }
+    }
+    // stable nodes first (breadth-first), then the rest (breadth-first)
+    auto is_stable = [&](int i) { return i == 0 || trie[i].rank <= cut; };
+    std::vector<int> order(trie.size());
+    for (size_t i = 0; i < order.size(); ++i) order[i] = int(i);
+    std::stable_sort(order.begin(), order.end(), [&](int a, int b) {
+      bool sa = is_stable(a), sb = is_stable(b);
+      if (sa != sb) return sa;
+      return trie[a].depth < trie[b].depth;
+    });
+    std::vector<int> pos(trie.size());
+    for (size_t i = 0; i < order.size(); ++i) pos[order[i]] = int(i);
+    nn = int(trie.size());
+    ns = 0;
+    for (int i = 0; i < nn; ++i) ns += is_stable(i);
+    woff[0] = 0;
+    for (int r = 0; r < NR; ++r) woff[r + 1] = woff[r] + maxk[r];
+    if (woff[NR] > MAX_UNION_W || nn > MAX_UNION_NODES) throw std::logic_error("dealer union too large");
+    parent.assign(size_t(nn), 0);
+    wslot.assign(size_t(nn), 0);
+    for (int i = 1; i < nn; ++i) {
+      const TNode &t = trie[order[i]];
+      parent[i] = uint16_t(pos[t.parent]);
+      wslot[i] = uint8_t(woff[t.rank] + t.k);
+    }
+    std::sort(fins.begin(), fins.end(), [](const Fin &a, const Fin &b) {
+      return std::tie(a.up, a.k, a.size, a.total) < std::tie(b.up, b.k, b.size, b.total);
+    });
+    for (int u = 0; u <= NR; ++u) gbegin[u] = -1;
+    for (size_t i = 0; i < fins.size();) {
+      size_t j = i;
+      Group g{uint8_t(fins[i].up), uint8_t(fins[i].k), uint8_t(fins[i].size), uint8_t(fins[i].total),
+              uint32_t(sfin_node.size()), 0, uint32_t(vfin_node.size()), 0};
+      for (; j < fins.size() && fins[j].up == fins[i].up && fins[j].k == fins[i].k && fins[j].size == fins[i].size &&
+             fins[j].total == fins[i].total;
+           ++j) {
+        int p = pos[fins[j].node];
+        if (p < ns) {
+          sfin_node.push_back(uint16_t(p));
+          sfin_mult.push_back(fins[j].mult);
+        } else {
+          vfin_node.push_back(uint16_t(p - ns));
+          vfin_mult.push_back(fins[j].mult);
+        }
+      }
+      g.se = uint32_t(sfin_node.size());
+      g.ve = uint32_t(vfin_node.size());
+      if (gbegin[g.up] < 0) gbegin[g.up] = int(groups.size());
+      groups.push_back(g);
+      i = j;
+    }
+    gbegin[NR] = int(groups.size());
+    for (int u = NR - 1; u >= 0; --u)
+      if (gbegin[u] < 0) gbegin[u] = gbegin[u + 1];
+  }
+};
+
+template <int W>
+void DealerUnion::varying(const double *sval, const double *gstable, const Counts *const B[W], int n,
+                          const int *ups, int nup, double (*out)[NR][6]) const {
+  typedef double vec __attribute__((vector_size(8 * W)));
+  vec w[MAX_UNION_W];
+  for (int r = cut + 1; r < NR; ++r) {
+    int k = 0;
+    for (int i = woff[r]; i < woff[r + 1]; ++i, ++k)
+      for (int l = 0; l < W; ++l) w[i][l] = (*B[l])[r] > k ? double((*B[l])[r] - k) : 0.0;
+  }
+  vec vval[MAX_UNION_NODES];
+  const int nv = nn - ns;
+  for (int i = 0; i < nv; ++i) {
+    int p = parent[size_t(ns + i)];
+    vec ws = w[wslot[size_t(ns + i)]];
+    vval[i] = p < ns ? sval[p] * ws : vval[p - ns] * ws;
+  }
+  double invff[40];
+  invff[0] = 1.0;
+  for (int d = 1; d <= maxdepth; ++d) invff[d] = n - d + 1 > 0 ? invff[d - 1] / double(n - d + 1) : 0.0;
+  for (int j = 0; j < nup; ++j) {
+    const int u = ups[j];
+    // (B_u - k) / B_u for each own-rank count k, per lane
+    vec fk[16];
+    for (int k = 0; k < maxk_up; ++k)
+      for (int l = 0; l < W; ++l) {
+        int bu = (*B[l])[u];
+        fk[k][l] = bu > k ? double(bu - k) / double(bu) : 0.0;
+      }
+    vec acc[5];
+    for (auto &a : acc)
+      for (int l = 0; l < W; ++l) a[l] = 0.0;
+    for (int g = gbegin[u]; g < gbegin[u + 1]; ++g) {
+      const Group &gr = groups[size_t(g)];
+      vec s0, s1;
+      for (int l = 0; l < W; ++l) s0[l] = gstable[g], s1[l] = 0.0;
+      uint32_t q = gr.vb;
+      for (; q + 2 <= gr.ve; q += 2) {
+        s0 += vfin_mult[q] * vval[vfin_node[q]];
+        s1 += vfin_mult[q + 1] * vval[vfin_node[q + 1]];
+      }
+      if (q < gr.ve) s0 += vfin_mult[q] * vval[vfin_node[q]];
+      acc[gr.total - 17] += (s0 + s1) * (invff[gr.size] * fk[gr.k]);
+    }
+    const int forb = u == TEN ? ACE : u == ACE ? TEN : -1;
+    for (int l = 0; l < W; ++l) {
+      double omega = forb >= 0 ? 1.0 - double((*B[l])[forb]) / n : 1.0;
+      double dp[6], s = 0;
+      for (int i = 0; i < 5; ++i) {
+        dp[i] = omega > 0 ? acc[i][l] / omega : 0.0;
+        s += dp[i];
+      }
+      dp[5] = 1.0 - s;
+      // stand values, as in stand_values()
+      double *g6 = out[l][j];
+      double bust = dp[5];
+      g6[0] = bust - (1.0 - bust);
+      double below = bust;
+      for (int t = 0; t < 5; ++t) {
+        double above = 1.0 - below - dp[t];
+        g6[t + 1] = below - above;
+        below += dp[t];
+      }
+    }
+  }
+}
+
+// Benchmark switch: per-upcard dealer evaluation in the batched pass.
+inline bool g_dealer_union = true;
+inline int g_dealer_union_cut = 4;  // ranks A..5 stable
+
+inline DealerTable::DealerTable(bool h17_) : h17(h17_) {
+  for (int u = 0; u < NR; ++u) build(u);
+  uni = std::make_shared<DealerUnion>(h17_, g_dealer_union_cut);
 }
 
 // Original evaluation: walk the trie depth-first carrying a stack of prefix

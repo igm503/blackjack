@@ -306,18 +306,20 @@ static int cmd_bench_case(const Args &a) {
   int threads = a.threads;
   g_dealer_depth_first = false;
   g_dealer_simd = true;
+  g_dealer_union = true;
   bool share_plans = true;
   g_static_schedule = a.variant != "current";
   if (a.variant == "threads") g_dealer_simd = false, share_plans = false;
   else if (a.variant == "shared-plan") g_dealer_simd = false;
   else if (a.variant == "simd") ;
   else if (a.variant == "chunks") g_static_schedule = false;
+  else if (a.variant == "batch") g_static_schedule = false, g_dealer_union = false;
   else if (a.variant == "carry-all") algo = SplitAlgo::CarryAll, threads = 1, g_dealer_depth_first = true;
   else if (a.variant == "settle-early") algo = SplitAlgo::TopDown, threads = 1, g_dealer_depth_first = true;
   else if (a.variant == "layered") threads = 1, g_dealer_depth_first = true, g_dealer_simd = false, share_plans = false;
   else if (a.variant == "bfs-dealer") threads = 1, g_dealer_simd = false, share_plans = false;
   else if (a.variant != "current" && a.variant != "simd" && a.variant != "threads" && a.variant != "shared-plan" &&
-           a.variant != "chunks") { fprintf(stderr, "unknown variant\n"); return 2; }
+           a.variant != "chunks" && a.variant != "batch") { fprintf(stderr, "unknown variant\n"); return 2; }
 
   struct Case { const char *id; int decks, max_splits; const char *player, *up; };
   static const Case cases[] = {
@@ -332,7 +334,7 @@ static int cmd_bench_case(const Args &a) {
     Engine eng(rules, threads);
     eng.algo = algo;
     eng.share_plans = share_plans;
-    eng.batch_upcards = a.variant == "current";
+    eng.batch_upcards = a.variant == "current" || a.variant == "batch";
     eng.state_limit = 60u * 1000 * 1000;  // ~5 GB of hash table
     double ev = 0;
     size_t nodes = 0;

@@ -111,14 +111,20 @@ pair. The speedups, in the order they were made:
 7. **All upcards of a pair in one pass** (big whole-round problems only): the
    node is decoded and its children located once, and the values for the
    upcards sit side by side.
+8. **One dealer walk for all upcards.** The ten upcards' dealer tries have
+   6,148 nodes between them; their union has 1,695, and an upcard's numerators
+   differ from the shared ones by a single factor. Ordered low ranks first,
+   38% of the union depends only on the counts of A to 5. Layers are sorted
+   with tens in the low bits, so runs of neighbouring card sets share those
+   counts and that part is computed once per run.
 
-Dealer evaluation is now most of the remaining time.
+On one thread the remaining time is now spread evenly: state values about
+40%, dealer evaluation 25%, locating children and bookkeeping the rest.
 
 ## How much faster could it get?
 
 Whole round, 6 decks, resplit to four hands is about 2 billion (card set,
-upcard) evaluations. Each costs a few hundred nanoseconds of CPU: one dealer
-evaluation for about half of them, and otherwise mostly memory traffic.
+upcard) evaluations, each costing about 200 nanoseconds of CPU.
 
 About two thirds of those states exist only to confirm that hitting a hard 17
 to 20 in a split hand is bad. Skipping them and bounding the skipped moves
@@ -132,8 +138,9 @@ the history of this branch, commit 149d1c4). Other things that did not help:
 * Proving bad hits bad on the last hand only, where no assumption is needed:
   the extra states come from bad hits in the earlier hands.
 
-One second for this problem does not look reachable: even 2 billion
-evaluations at 10 ns each across 12 threads would take about two.
+Every one of those card sets is a different situation the player could be in,
+with its own exact answer, so full enumeration has to visit them all. One
+second would need about 4 ns of CPU per evaluation on this machine.
 
 ## Benchmark history
 
@@ -159,9 +166,10 @@ python3 bench/run.py show
 | 6 | One forward pass per pair | 0.73 s | 6.27 s | 0.54 s | 2m 42s |
 | 7 | SIMD dealer evaluation | 0.61 s | 5.08 s | 0.41 s | 2m 03s |
 | 8 | Dynamic scheduling | 0.58 s | 4.87 s | 0.37 s | 1m 59s |
-| 9 | All upcards in one pass | 0.66 s | 4.68 s | 0.38 s | 1m 48s |
+| 9 | All upcards in one pass | 0.55 s | 5.04 s | 0.35 s | 1m 55s |
+| 10 | One dealer walk for all upcards | 0.57 s | 4.82 s | 0.34 s | 1m 33s |
 
-Apple M2 Max, 12 threads; iterations 1 to 4 are single-threaded, and 1 and 2 are stopped once their hash table passes 60 million states (about 5 GB). Timings vary by about 20% with other load on the machine. Every iteration returns the same EV for each case to 15 digits.
+Apple M2 Max, 12 threads; iterations 1 to 4 are single-threaded, and 1 and 2 are stopped once their hash table passes 60 million states (about 5 GB). The machine was in use while these were taken and timings of the long case varied by 20 to 40% between runs; the last two rows are the best of three. Every iteration returns the same EV for each case to 15 digits.
 
 ## Checking it
 

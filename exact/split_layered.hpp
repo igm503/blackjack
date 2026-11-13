@@ -132,6 +132,26 @@ class LayeredSplitSolver {
     }
   };
 
+  // Uninitialised, reusable storage.
+  template <class T>
+  struct Buf {
+    std::unique_ptr<T[]> p;
+    size_t cap = 0;
+    void ensure(size_t n) {
+      if (n > cap) {
+        p.reset();
+        p.reset(new T[n]);
+        cap = n;
+      }
+    }
+    T &operator[](size_t i) { return p[i]; }
+    const T &operator[](size_t i) const { return p[i]; }
+  };
+  struct Vals {
+    Buf<uint64_t> off;   // per node: start of its values
+    Buf<uint16_t> hoff;  // NH per node: start of each hand-state group, relative
+    Buf<double> val;
+  };
   // Result of the forward pass: the reachable states of every layer.
   struct Plan {
     std::vector<Layer> layers;
@@ -308,8 +328,15 @@ class LayeredSplitSolver {
     size_t stride = size_t(nb + 1) & ~size_t(1);
     return 2 * (8 * stride * size_t(P.max_vals) + (8 + 2 * size_t(NH_)) * (P.max_nodes + 1));
   }
+  // Value buffers of a batched evaluation. Passing the same Workspace to
+  // successive calls reuses the memory instead of mapping (and page-faulting)
+  // gigabytes afresh each time.
+  struct Workspace {
+    Vals bufs[2];
+  };
   std::vector<Result> evaluate_batch(const Plan &P, const std::vector<Counts> &unseen,
-                                     const std::vector<int> &upcards, int threads = -1) const {
+                                     const std::vector<int> &upcards, int threads = -1,
+                                     Workspace *ws = nullptr) const {
     auto t0 = std::chrono::steady_clock::now();
     if (threads < 0) threads = threads_;
     const int B = int(upcards.size());
@@ -318,7 +345,11 @@ class LayeredSplitSolver {
     bx.B = B;
     bx.BB = (B + 1) & ~1;
     set_pair(bx.pair, P.pair);
+    bx.supply = P.supply;
     for (int b = 0; b < B; ++b) {
+      Counts want = P.supply;
+      want[upcards[b]]--;
+      if (want != unseen[b]) bx.exact_supply = false;
       bx.S[b] = unseen[b];
       bx.N[b] = total_cards(unseen[b]);
       bx.u[b] = upcards[b];
@@ -327,11 +358,12 @@ class LayeredSplitSolver {
       for (int r = 0; r < NR; ++r)
         if (unseen[b][r] > P.supply[r]) throw std::invalid_argument("plan does not cover this shoe");
     }
-    Vals bufs[2];
-    for (auto &b : bufs) {
-      b.off.ensure(P.max_nodes + 1);
-      b.hoff.ensure(P.max_nodes * NH_);
-      b.val.ensure(P.max_vals * size_t(bx.BB));
+    Workspace local;
+    Vals *bufs = (ws ? ws : &local)->bufs;
+    for (int j = 0; j < 2; ++j) {
+      bufs[j].off.ensure(P.max_nodes + 1);
+      bufs[j].hoff.ensure(P.max_nodes * NH_);
+      bufs[j].val.ensure(P.max_vals * size_t(bx.BB));
     }
     BatchStats total;
     std::mutex total_mutex;
@@ -401,30 +433,13 @@ class LayeredSplitSolver {
   static constexpr uint32_t WMASK = ~GNEED;
   // hand-state bits: hard pips x -> bit x (0..21); soft pips x (2..11) -> bit 20 + x
   static constexpr uint32_t HITTABLE = 0x001FFFFFu | 0xFFC00000u;
-  static constexpr int SH_[NR] = {0, 8, 15, 21, 27, 33, 38, 43, 48, 53};
+  // Packed card counts, tens in the lowest bits and aces in the highest: in
+  // a sorted layer, neighbours then share their low-rank counts, which is
+  // what the dealer evaluation reuses (see DealerUnion).
+  static constexpr int SH_[NR] = {50, 43, 37, 31, 25, 20, 15, 10, 5, 0};
   static constexpr int FW_[NR] = {8, 7, 6, 6, 6, 5, 5, 5, 5, 5};
   static constexpr int MAXNH = 28;
 
-  // Uninitialised, reusable storage.
-  template <class T>
-  struct Buf {
-    std::unique_ptr<T[]> p;
-    size_t cap = 0;
-    void ensure(size_t n) {
-      if (n > cap) {
-        p.reset();
-        p.reset(new T[n]);
-        cap = n;
-      }
-    }
-    T &operator[](size_t i) { return p[i]; }
-    const T &operator[](size_t i) const { return p[i]; }
-  };
-  struct Vals {
-    Buf<uint64_t> off;   // per node: start of its values
-    Buf<uint16_t> hoff;  // NH per node: start of each hand-state group, relative
-    Buf<double> val;
-  };
   // Facts about the pair being split that both passes need.
   struct PairInfo {
     int p = 0;
@@ -660,6 +675,8 @@ class LayeredSplitSolver {
     Counts S[BMAX];
     int N[BMAX], u[BMAX], forb[BMAX];
     PairInfo pair;
+    Counts supply;  // cards unseen before the upcard is removed
+    bool exact_supply = true;  // every batch shoe is supply minus its upcard
     double root_value[BMAX] = {0};
   };
   struct BatchStats {
@@ -998,6 +1015,25 @@ class LayeredSplitSolver {
     for (size_t b = 0; b < bb; b += 2) *(V2 *)(o + b) = *(const V2 *)(x + b) + *(const V2 *)(y + b);
   }
 
+  struct PendingU {
+    size_t i;   // node
+    double *v;  // its value block
+  };
+  // Dealer values of every upcard in the batch for `cnt` (<= W) nodes that
+  // share the stable part of the dealer trie.
+  template <int W>
+  void union_lanes(const DealerUnion &U, const double *sval, const double *gstable, const Counts *base, size_t cnt,
+                   int n, const BatchCtx &bx, const PendingU *p, size_t BB) const {
+    const Counts *bp[W];
+    for (size_t q = 0; q < size_t(W); ++q) bp[q] = &base[q < cnt ? q : 0];
+    double out[W][NR][6];
+    U.varying<W>(sval, gstable, bp, n, bx.u, bx.B, out);
+    for (size_t q = 0; q < cnt; ++q)
+      for (int b = 0; b < bx.B; ++b) {
+        if (base[q][bx.u[b]] < 1) continue;  // this upcard cannot occur here
+        for (size_t t = 0; t < 6; ++t) p[q].v[t * BB + size_t(b)] = out[q][b][t];
+      }
+  }
   struct PendingB {
     double *v;  // node's value block (6 * BB dealer slots first)
     const Counts *rem;
@@ -1044,6 +1080,13 @@ class LayeredSplitSolver {
     TmpB tmp[BLOCK];
     std::vector<PendingB> pend[BMAX];
     for (int b = 0; b < B; ++b) pend[b].reserve(BLOCK);
+    const DealerUnion &U = *dealer_.uni;
+    const bool use_union = g_dealer_union && bx.exact_supply;
+    std::vector<PendingU> upend;
+    upend.reserve(BLOCK);
+    std::unique_ptr<double[]> sval(new double[DealerUnion::MAX_UNION_NODES]), gstable(new double[U.groups.size() + 1]);
+    uint64_t cached_sig = 0;
+    bool have_sig = false;
     static const double kZeros[BMAX + 1] = {0};
 
     for (size_t i0 = a; i0 < b_end; i0 += BLOCK) {
@@ -1099,6 +1142,8 @@ class LayeredSplitSolver {
               for (size_t q = 0; q < 6; ++q) vaxpy(v + q * BB, p, gc + q * BB, BB);
             }
             stats.dshort += size_t(B);
+          } else if (use_union) {
+            upend.push_back({i, v});
           } else {
             for (int b = 0; b < B; ++b) {
               if (!t.feasible[b]) continue;
@@ -1120,7 +1165,31 @@ class LayeredSplitSolver {
           }
         }
       }
-      // direct dealer evaluations, vectorised across nodes, per upcard
+      // Direct dealer evaluations. All upcards share one trie walk, and runs
+      // of nodes with the same low-rank counts share its stable part.
+      for (size_t j0 = 0; j0 < upend.size();) {
+        uint64_t sig = l.key[upend[j0].i] >> SH_[U.cut];
+        size_t j1 = j0 + 1;
+        while (j1 < upend.size() && j1 - j0 < 8 && (l.key[upend[j1].i] >> SH_[U.cut]) == sig) ++j1;
+        size_t cnt = j1 - j0;
+        Counts base[8];
+        for (size_t q = 0; q < cnt; ++q) {
+          uint64_t key = l.key[upend[j0 + q].i];
+          for (int r = 0; r < NR; ++r) base[q][r] = bx.supply[r] - field(key, r);
+        }
+        if (!have_sig || sig != cached_sig) {
+          U.stable(base[0], sval.get(), gstable.get());
+          cached_sig = sig;
+          have_sig = true;
+        }
+        if (cnt > 4) union_lanes<8>(U, sval.get(), gstable.get(), base, cnt, n + 0, bx, upend.data() + j0, BB);
+        else if (cnt > 2) union_lanes<4>(U, sval.get(), gstable.get(), base, cnt, n, bx, upend.data() + j0, BB);
+        else union_lanes<2>(U, sval.get(), gstable.get(), base, cnt, n, bx, upend.data() + j0, BB);
+        stats.devals += cnt * size_t(B);
+        j0 = j1;
+      }
+      upend.clear();
+      // (benchmark variant) direct dealer evaluations per upcard
       for (int b = 0; b < B; ++b) {
         auto &pl = pend[b];
         size_t j0 = 0;

@@ -367,11 +367,11 @@
    "recorded_at": "2026-11-12 01:43:47"
   },
   {
-   "id": "v9-current",
+   "id": "v9-batch",
    "results": {
     "hand-88vT-6d": {
      "status": "ok",
-     "seconds": 0.656114,
+     "seconds": 0.552954,
      "ev": -0.474878331523948,
      "nodes": 8091982,
      "threads": 12,
@@ -379,7 +379,7 @@
     },
     "hand-22v6-8d": {
      "status": "ok",
-     "seconds": 4.675014,
+     "seconds": 5.035247,
      "ev": 0.236864147239738,
      "nodes": 69843427,
      "threads": 12,
@@ -387,7 +387,7 @@
     },
     "round-6d-spl1": {
      "status": "ok",
-     "seconds": 0.376057,
+     "seconds": 0.352992,
      "ev": -0.00456843635361194,
      "nodes": 8907790,
      "threads": 12,
@@ -395,18 +395,60 @@
     },
     "round-6d-spl3": {
      "status": "ok",
-     "seconds": 108.058586,
+     "seconds": 115.367889,
      "ev": -0.00402812242351966,
      "nodes": 2173801630,
      "threads": 12,
-     "runs": 1
+     "runs": 2
     }
    },
    "label": "All upcards in one pass",
-   "note": "For the big whole-round problems, a pair's upcards are evaluated together: the node is decoded and its children located once, the values of the upcards sit side by side, and dealer evaluations run eight card compositions per pass. Profiling shows the dealer evaluation is now most of the remaining time.",
+   "note": "For the big whole-round problems, a pair's upcards are evaluated together: the node is decoded and its children located once, the values of the upcards sit side by side, and dealer evaluations run eight card compositions per pass. Profiling: the dealer evaluation is half of the remaining CPU time.",
+   "variant": "batch",
+   "commit": "842439f+",
+   "recorded_at": "2026-11-12 21:23:58"
+  },
+  {
+   "id": "v10-current",
+   "results": {
+    "hand-88vT-6d": {
+     "status": "ok",
+     "seconds": 0.574117,
+     "ev": -0.474878331523948,
+     "nodes": 8091982,
+     "threads": 12,
+     "runs": 3
+    },
+    "hand-22v6-8d": {
+     "status": "ok",
+     "seconds": 4.824969,
+     "ev": 0.236864147239738,
+     "nodes": 69843427,
+     "threads": 12,
+     "runs": 3
+    },
+    "round-6d-spl1": {
+     "status": "ok",
+     "seconds": 0.340644,
+     "ev": -0.00456843635361194,
+     "nodes": 8907790,
+     "threads": 12,
+     "runs": 3
+    },
+    "round-6d-spl3": {
+     "status": "ok",
+     "seconds": 92.74161,
+     "ev": -0.00402812242351966,
+     "nodes": 2173801630,
+     "threads": 12,
+     "runs": 2
+    }
+   },
+   "label": "One dealer walk for all upcards",
+   "note": "The ten upcards' dealer tries have 6,148 nodes in total but their union has 1,695, and an upcard's numerators differ from the shared ones by one factor. With low ranks first, 38% of the union depends only on the counts of A-5, which runs of neighbouring card sets share (layers are now sorted with tens in the low bits), so that part is computed once per run. Dealer CPU drops 2.3x on one thread; with all threads the gain is smaller.",
    "variant": "current",
-   "commit": "8c6d0c1+",
-   "recorded_at": "2026-11-12 01:46:04"
+   "commit": "842439f+",
+   "recorded_at": "2026-11-12 21:26:45"
   }
  ]
 }

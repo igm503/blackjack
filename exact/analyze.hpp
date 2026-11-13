@@ -448,6 +448,7 @@ struct Engine {
       };
       // Upcards of one pair evaluated together in one backward pass, as
       // many per pass as the memory budget allows.
+      LayeredSplitSolver::Workspace workspace;  // reused by every batch of every pair
       auto eval_batched = [&](const LayeredSplitSolver &solver, const LayeredSplitSolver::Plan &P, int p,
                               int inner) {
         const std::vector<int> &us = ups[p];
@@ -463,7 +464,7 @@ struct Engine {
             c[u]--;
             unseen.push_back(c);
           }
-          auto results = solver.evaluate_batch(P, unseen, part, inner);
+          auto results = solver.evaluate_batch(P, unseen, part, inner, &workspace);
           for (size_t j = 0; j < part.size(); ++j) {
             const auto &res = results[j];
             int u = part[j];
@@ -496,6 +497,7 @@ struct Engine {
       } else {
         // Big problems: one pair at a time to bound memory, every thread on it.
         LayeredSplitSolver solver(rules, dealer, threads, split_options());
+        // low pairs first: they are the largest, so the workspace is sized once
         for (int p = 0; p < NR; ++p) {
           if (ups[p].empty()) continue;
           auto P = solver.plan(supply_for(p), p);

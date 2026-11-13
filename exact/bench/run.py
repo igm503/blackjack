@@ -105,12 +105,21 @@ VARIANTS = [
                 "No measurable gain on the whole-round cases.",
     },
     {
-        "variant": "current",
+        "variant": "batch",
         "label": "All upcards in one pass",
         "note": "For the big whole-round problems, a pair's upcards are evaluated together: the node is "
                 "decoded and its children located once, the values of the upcards sit side by side, and "
-                "dealer evaluations run eight card compositions per pass. Profiling shows the dealer "
-                "evaluation is now most of the remaining time.",
+                "dealer evaluations run eight card compositions per pass. Profiling: the dealer "
+                "evaluation is half of the remaining CPU time.",
+    },
+    {
+        "variant": "current",
+        "label": "One dealer walk for all upcards",
+        "note": "The ten upcards' dealer tries have 6,148 nodes in total but their union has 1,695, and "
+                "an upcard's numerators differ from the shared ones by one factor. With low ranks first, "
+                "38% of the union depends only on the counts of A-5, which runs of neighbouring card sets "
+                "share (layers are now sorted with tens in the low bits), so that part is computed once "
+                "per run. Dealer CPU drops 2.3x on one thread; with all threads the gain is smaller.",
     },
 ]
 
@@ -261,7 +270,7 @@ def backfill(timeout: float):
 
     # The multi-threaded build needs the machine to itself; the single-threaded
     # iterations can then share it (two memory-hungry hash solvers in series).
-    for name in ("threads", "shared-plan", "simd", "chunks", "current"):
+    for name in ("threads", "shared-plan", "simd", "chunks", "batch", "current"):
         go(name)
     with ThreadPoolExecutor(3) as pool:
         futures = [pool.submit(go, "bfs-dealer"), pool.submit(go, "layered"),
