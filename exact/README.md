@@ -114,60 +114,26 @@ pair. The speedups, in the order they were made:
 
 Dealer evaluation is now most of the remaining time.
 
-## The certified shortcut (`--assume-stand17`, off by default)
-
-About two thirds of the states in a split exist only to confirm that hitting a
-hard 17, 18, 19 or 20 is bad. With `--assume-stand17` those hits (and doubles)
-are not enumerated. Instead every skipped move is checked against a sound
-upper bound on what it could be worth:
-
-* whatever a hand ends on pays no more than 21 would against the same dealer,
-  and the dealer's distribution is a martingale, so a hit is worth at most
-  `g21 - P(bust)` to the hand itself (refined one card deeper where that is not
-  enough);
-* the only other thing a hit does is show the hands still waiting one more
-  card.
-
-On the last hand to be played there are no hands waiting, so the check is a
-proof. Otherwise the result is the exact optimum **provided seeing one extra
-card is never worth more than the reported margin to the hands still to be
-played**. The solver prints that margin, and re-solves by full enumeration any
-position whose margin is below `--min-info-margin` (default 0.02 of a bet).
-
-```
-$ ./bjca hand --decks 6 --player 2,2 --up T --assume-stand17
-  split     -0.4708963272          # identical to the full enumeration
-hits on hard 17+ after a split were not enumerated in 1 split positions; never better
-than standing provided one extra seen card is worth < 0.0794 to later hands.
-```
-
-For scale, `--measure-info` reports the largest such value seen anywhere in a
-full enumeration: 0.0001 to 0.0004 at 6 decks, 0.0008 at 2 decks, 0.005 at one
-deck (where the certificate is usually too thin and the solver enumerates
-instead). In every case tried the shortcut returns the same number as the full
-enumeration to the last digit, 2.5 to 3.5 times faster.
-
-What would make it unconditional is a provable bound of a few percent on the
-value of one seen card. The bounds I could derive are about ten times too
-loose.
-
 ## How much faster could it get?
 
 Whole round, 6 decks, resplit to four hands is about 2 billion (card set,
-upcard) evaluations by full enumeration, or 0.7 billion with the shortcut. Each
-costs a few hundred nanoseconds, half of it one dealer evaluation. Things that
-were tried and did not help:
+upcard) evaluations. Each costs a few hundred nanoseconds of CPU: one dealer
+evaluation for about half of them, and otherwise mostly memory traffic.
+
+About two thirds of those states exist only to confirm that hitting a hard 17
+to 20 in a split hand is bad. Skipping them and bounding the skipped moves
+instead gives the same numbers three times faster, but the bound needs an
+assumption about how much one extra seen card can be worth to the hands still
+to be played. That is not full enumeration, so it is not in this code (it is in
+the history of this branch, commit 149d1c4). Other things that did not help:
 
 * Dropping card sets too unlikely to matter: probability is not concentrated.
   Removing every set with probability under 1e-22 removes only 20% of them.
-* Proving bad hits bad on the last hand only (where it needs no assumption):
+* Proving bad hits bad on the last hand only, where no assumption is needed:
   the extra states come from bad hits in the earlier hands.
-* Skipping more than hard 17+ (for example hard 13+ against a 6, which would
-  shrink 2,2 a further 5 times): the cheap bound is too weak for stiff hands.
 
-An ideal solver that followed only sensible lines would still have roughly
-400 million evaluations, several seconds on this machine. One second for this
-problem does not look reachable with exact full-information play.
+One second for this problem does not look reachable: even 2 billion
+evaluations at 10 ns each across 12 threads would take about two.
 
 ## Benchmark history
 
@@ -194,9 +160,8 @@ python3 bench/run.py show
 | 7 | SIMD dealer evaluation | 0.61 s | 5.08 s | 0.41 s | 2m 03s |
 | 8 | Dynamic scheduling | 0.58 s | 4.87 s | 0.37 s | 1m 59s |
 | 9 | All upcards in one pass | 0.66 s | 4.68 s | 0.38 s | 1m 48s |
-| 10 | Skip hits on hard 17+ (certified) * | 0.25 s | 1.97 s | 0.22 s | 33.2 s |
 
-\* relies on the stated assumption (see above). Apple M2 Max, 12 threads; iterations 1 to 4 are single-threaded, and 1 and 2 are stopped once their hash table passes 60 million states (about 5 GB). Timings vary by about 20% with other load on the machine. Every iteration returns the same EV for each case to 15 digits.
+Apple M2 Max, 12 threads; iterations 1 to 4 are single-threaded, and 1 and 2 are stopped once their hash table passes 60 million states (about 5 GB). Timings vary by about 20% with other load on the machine. Every iteration returns the same EV for each case to 15 digits.
 
 ## Checking it
 
@@ -209,8 +174,7 @@ make test-full   # about 20 minutes
   independent split solvers against each other (carry every finished hand /
   settle early / layered, single and multi-threaded) over random rules, shoes,
   pairs and upcards; mid-split positions recombined into the value of the
-  split; batched against one-at-a-time evaluation; and the certified shortcut
-  against full enumeration wherever its certificate is accepted.
+  split; and batched against one-at-a-time evaluation.
 * `reference.py` + `test_reference.py`: a deliberately naive Python brute force
   with exact rational arithmetic. It tracks the hole card with Bayes' rule,
   plays the dealer out for every possible hole card, and settles split hands

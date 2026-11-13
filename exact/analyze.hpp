@@ -226,32 +226,19 @@ struct Engine {
   size_t eval_memory_budget = size_t(6) << 30;  // working memory for concurrent upcards
   bool share_plans = true;  // one forward pass per pair, shared by all upcards
   bool batch_upcards = true;  // ... and all its upcards evaluated in one backward pass
-  // Skip (but certify) hitting hard 17+ in split hands; see SplitOptions. A
-  // result is accepted if its certificate tolerates one extra seen card
-  // being worth up to `min_info_margin` to the hands still to be played;
-  // otherwise that position is solved again by full enumeration.
-  bool assume_stand17 = false;
-  double min_info_margin = 0.02;
-  bool measure_info = false;
-  mutable std::atomic<size_t> cert_fallbacks{0}, cert_accepted{0};
-  mutable std::mutex cert_mutex;
-  mutable double cert_info_seen = std::numeric_limits<double>::infinity();  // weakest accepted certificate
+  bool measure_info = false;  // diagnostic, see SplitOptions
+  mutable std::mutex info_mutex;
   mutable double max_info_seen = 0;
 
-  SplitOptions split_options(bool strict = false) const {
+  SplitOptions split_options() const {
     SplitOptions o;
-    o.stand_hard17 = assume_stand17 && !strict;
     o.measure_info = measure_info;
     return o;
   }
-  bool accept(const LayeredSplitSolver::Result &r) const {
-    std::lock_guard<std::mutex> lock(cert_mutex);
+  void note(const LayeredSplitSolver::Result &r) const {
+    if (!measure_info) return;
+    std::lock_guard<std::mutex> lock(info_mutex);
     max_info_seen = std::max(max_info_seen, r.max_info_value);
-    if (!assume_stand17 || r.skipped_states == 0) return true;
-    if (r.cert_last < 0 || r.cert_info < min_info_margin) return false;
-    cert_info_seen = std::min(cert_info_seen, r.cert_info);
-    ++cert_accepted;
-    return true;
   }
 
   explicit Engine(const Rules &r, int threads_ = 0)
@@ -283,12 +270,7 @@ struct Engine {
     }
     LayeredSplitSolver s(rules, dealer, inner_threads, split_options());
     auto res = s.solve(unseen, pair_rank, upcard);
-    if (!accept(res)) {
-      ++cert_fallbacks;
-      LayeredSplitSolver strict(rules, dealer, inner_threads, split_options(true));
-      res = strict.solve(unseen, pair_rank, upcard);
-      accept(res);
-    }
+    note(res);
     if (nodes) *nodes = res.nodes;
     return res.value;
   }
@@ -344,7 +326,7 @@ struct Engine {
     if (pending < 0 || splits_left < 0 || pending + splits_left > rules.max_splits)
       throw std::invalid_argument("pending + splits_left exceeds max_splits");
     HandResult out;
-    LayeredSplitSolver solver(rules, dealer, threads);  // always full enumeration here
+    LayeredSplitSolver solver(rules, dealer, threads);
     LayeredSplitSolver::Root root;
     root.lone = false;
     root.pending = pending;
@@ -459,13 +441,7 @@ struct Engine {
         Counts unseen = supply_for(p);
         unseen[u]--;
         auto res = solver.evaluate(P, unseen, u, inner);
-        if (!accept(res)) {
-          // certificate too thin for this position: enumerate everything
-          ++cert_fallbacks;
-          LayeredSplitSolver strict(rules, dealer, inner, split_options(true));
-          res = strict.solve(unseen, p, u);
-          accept(res);
-        }
+        note(res);
         out.cell[u][p][p].split = res.value;
         out.cell[u][p][p].split_nodes = res.nodes;
         nodes += res.nodes;
@@ -489,14 +465,9 @@ struct Engine {
           }
           auto results = solver.evaluate_batch(P, unseen, part, inner);
           for (size_t j = 0; j < part.size(); ++j) {
-            auto res = results[j];
+            const auto &res = results[j];
             int u = part[j];
-            if (!accept(res)) {
-              ++cert_fallbacks;
-              LayeredSplitSolver strict(rules, dealer, inner, split_options(true));
-              res = strict.solve(unseen[j], p, u);
-              accept(res);
-            }
+            note(res);
             out.cell[u][p][p].split = res.value;
             out.cell[u][p][p].split_nodes = res.nodes;
             nodes += res.nodes;

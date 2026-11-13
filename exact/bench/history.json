@@ -407,57 +407,6 @@
    "variant": "current",
    "commit": "8c6d0c1+",
    "recorded_at": "2026-11-12 01:46:04"
-  },
-  {
-   "id": "v10-stand17",
-   "results": {
-    "hand-88vT-6d": {
-     "status": "ok",
-     "seconds": 0.245736,
-     "ev": -0.474878331523948,
-     "nodes": 1812912,
-     "threads": 12,
-     "cert_info": 0.0856336557851097,
-     "cert_fallbacks": 0,
-     "runs": 3
-    },
-    "hand-22v6-8d": {
-     "status": "ok",
-     "seconds": 1.970966,
-     "ev": 0.236864147239738,
-     "nodes": 24139624,
-     "threads": 12,
-     "cert_info": 0.119239318770984,
-     "cert_fallbacks": 0,
-     "runs": 3
-    },
-    "round-6d-spl1": {
-     "status": "ok",
-     "seconds": 0.221976,
-     "ev": -0.00456843635361194,
-     "nodes": 4297720,
-     "threads": 12,
-     "cert_info": 0.0397238269904305,
-     "cert_fallbacks": 0,
-     "runs": 3
-    },
-    "round-6d-spl3": {
-     "status": "ok",
-     "seconds": 33.15078,
-     "ev": -0.00402812242351966,
-     "nodes": 682384480,
-     "threads": 12,
-     "cert_info": 0.0277935998262161,
-     "cert_fallbacks": 0,
-     "runs": 1
-    }
-   },
-   "label": "Skip hits on hard 17+ (certified)",
-   "note": "Two thirds of the states only exist to confirm that hitting a hard 17-20 in a split hand is bad. They are no longer enumerated; instead every skipped move is checked against a sound upper bound. The bound is complete on the last hand to be played. While other hands are still waiting it holds as long as seeing one extra card is worth less than the certified margin (a few percent of a bet) to them; the largest value measured in full enumerations is under 0.1%. Positions whose margin is below 2% are solved by full enumeration.",
-   "variant": "stand17",
-   "commit": "8c6d0c1+",
-   "recorded_at": "2026-11-12 01:48:11",
-   "assumption": "Relies on: one extra seen card is worth less than the certified margin to the hands still to be played. Off by default (--assume-stand17)."
   }
  ]
 }

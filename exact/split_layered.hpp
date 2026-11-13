@@ -33,17 +33,8 @@
 namespace bj {
 
 struct SplitOptions {
-  // Do not enumerate hitting or doubling a hard 17, 18, 19 or 20 in a split
-  // hand. Every such skipped move is checked against a sound upper bound:
-  //   * on the last hand to be played the check is complete: cert_last >= 0
-  //     proves that no skipped move was better than standing;
-  //   * while other hands are still waiting, a hit also shows those hands
-  //     one extra card. The bound holds provided that information is worth
-  //     at most cert_info (per unit bet, per card) to them.
-  // So the result is the exact optimum if cert_last >= 0 and the value of
-  // one extra seen card never exceeds cert_info. Callers decide what
-  // cert_info they accept and fall back to the full enumeration otherwise.
-  bool stand_hard17 = false;
+  // Report the largest observed value, to the hands still to be played, of
+  // seeing one extra card (a diagnostic; costs a little time).
   bool measure_info = false;
 };
 
@@ -65,10 +56,6 @@ class LayeredSplitSolver {
     size_t nodes = 0, values = 0, dealer_evals = 0, dealer_shortcuts = 0;
     int layers = 0;
     double forward_seconds = 0, backward_seconds = 0;
-    // Only with Options::stand_hard17 (see there). +inf if nothing was skipped.
-    double cert_last = std::numeric_limits<double>::infinity();
-    double cert_info = std::numeric_limits<double>::infinity();
-    size_t skipped_states = 0;
     // Only with Options::measure_info: largest observed value, to the hands
     // still to be played, of seeing one extra card.
     double max_info_value = 0;
@@ -78,8 +65,6 @@ class LayeredSplitSolver {
 
   LayeredSplitSolver(const Rules &rules, const DealerTable &dealer, int threads = 1, Options opt = Options{})
       : rules_(rules), dealer_(dealer), threads_(threads), opt_(opt) {
-    hit_mask_ = HITTABLE;
-    if (opt_.stand_hard17) hit_mask_ &= ~((1u << 17) | (1u << 18) | (1u << 19) | (1u << 20));
     L_ = rules.max_splits;
     if (L_ > 6) throw std::invalid_argument("max_splits > 6 not supported");
     NC_ = 0;
@@ -305,9 +290,6 @@ class LayeredSplitSolver {
     res.backward_seconds = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
     res.dealer_evals = total.devals;
     res.dealer_shortcuts = total.dshort;
-    res.cert_last = total.cert_last;
-    res.cert_info = total.cert_info;
-    res.skipped_states = total.skipped;
     res.max_info_value = total.max_info;
     res.value = cx.root_value;
     res.stand = cx.root_stand;
@@ -403,9 +385,6 @@ class LayeredSplitSolver {
       r.dealer_evals = total.devals / size_t(B);
       r.dealer_shortcuts = total.dshort / size_t(B);
       r.value = bx.root_value[b];
-      r.cert_last = total.cert_last[b];
-      r.cert_info = total.cert_info[b];
-      r.skipped_states = total.skipped[b];
       r.max_info_value = total.max_info[b];
     }
     return out;
@@ -452,7 +431,6 @@ class LayeredSplitSolver {
     bool locked = false, resplit_ok = true;
     int fbit[NR];
     bool fdbl[NR];
-    bool fdbl_skipped[NR];  // double allowed by the rules but not enumerated
   };
   struct PlanCtx {
     Counts S;
@@ -472,7 +450,6 @@ class LayeredSplitSolver {
   const DealerTable &dealer_;
   int threads_;
   Options opt_;
-  uint32_t hit_mask_;
   int L_, NC_, NH_;
   int ms_[8][8], cm_[32], cs_[32], hidx_[32], hcanon_[32], hm_[32], hs_[32];
   int8_t trans_[32][NR];
@@ -491,11 +468,6 @@ class LayeredSplitSolver {
       bool d = rules_.das && total != 21 && !pi.locked;
       if (rules_.double_on == DoubleOn::NineToEleven && (total < 9 || total > 11)) d = false;
       if (rules_.double_on == DoubleOn::TenToEleven && (total < 10 || total > 11)) d = false;
-      pi.fdbl_skipped[c] = false;
-      if (d && opt_.stand_hard17 && !soft && total >= 17) {
-        d = false;
-        pi.fdbl_skipped[c] = true;
-      }
       pi.fdbl[c] = d;
     }
   }
@@ -555,7 +527,7 @@ class LayeredSplitSolver {
         all |= 1u << pi.fbit[c0];
         dbl |= pi.fdbl[c0];
       }
-      l.thit[i * NH_ + hc] = pi.locked ? 0u : (all & hit_mask_);
+      l.thit[i * NH_ + hc] = pi.locked ? 0u : (all & HITTABLE);
       if (dbl) dblm |= 1u << hc;
     }
     l.tfh[i] = fh;
@@ -692,23 +664,14 @@ class LayeredSplitSolver {
   };
   struct BatchStats {
     size_t devals = 0, dshort = 0;
-    size_t skipped[BMAX] = {0};
-    double cert_last[BMAX], cert_info[BMAX], max_info[BMAX];
+    double max_info[BMAX];
     BatchStats() {
-      for (int b = 0; b < BMAX; ++b) {
-        cert_last[b] = cert_info[b] = std::numeric_limits<double>::infinity();
-        max_info[b] = 0;
-      }
+      for (int b = 0; b < BMAX; ++b) max_info[b] = 0;
     }
     void merge(const BatchStats &o) {
       devals += o.devals;
       dshort += o.dshort;
-      for (int b = 0; b < BMAX; ++b) {
-        skipped[b] += o.skipped[b];
-        cert_last[b] = std::min(cert_last[b], o.cert_last[b]);
-        cert_info[b] = std::min(cert_info[b], o.cert_info[b]);
-        max_info[b] = std::max(max_info[b], o.max_info[b]);
-      }
+      for (int b = 0; b < BMAX; ++b) max_info[b] = std::max(max_info[b], o.max_info[b]);
     }
   };
 
@@ -744,100 +707,14 @@ class LayeredSplitSolver {
     bool feasible;
   };
   struct Stats {
-    size_t devals = 0, dshort = 0, skipped = 0;
-    double cert_last = std::numeric_limits<double>::infinity();
-    double cert_info = std::numeric_limits<double>::infinity();
+    size_t devals = 0, dshort = 0;
     double max_info = 0;
     void merge(const Stats &o) {
       devals += o.devals;
       dshort += o.dshort;
-      skipped += o.skipped;
-      cert_last = std::min(cert_last, o.cert_last);
-      cert_info = std::min(cert_info, o.cert_info);
       max_info = std::max(max_info, o.max_info);
     }
   };
-
-  // Check a skipped "hit hard t" (and "double", if the rules would allow it)
-  // at one state. With U an upper bound on what the hand itself can get from
-  // hitting, hitting beats standing by at most
-  //     U - g_t(R) + K * (value of one extra seen card to later hands),
-  // K being a bound on the expected number of cards the hitting line shows,
-  // because (i) whatever the hand ends on pays no more than 21 would against
-  // the same dealer, and the dealer's distribution is a martingale, so the
-  // hand's own prospects after a non-busting card c are at most
-  // max(stand there, g_21(R+c) - P(bust there)); (ii) the later hands gain
-  // nothing but the sight of those extra cards.
-  void certify(const EvalCtx &cx, const Tmp &t, const ptrdiff_t *child, const Layer *ch, const Vals *chv,
-               int n, const double *g, int total, int m, bool dbl_skipped, Stats &st) const {
-    certify_at(cx.u, cx.forb, t.rem, t.pc, child, ch, chv, n, g, 1, 0, total, m, dbl_skipped, st.skipped,
-               st.cert_last, st.cert_info, st.devals);
-  }
-  // `g` and the children's dealer values are read with a stride and lane so
-  // that the batched evaluation (several upcards per node) can use this too.
-  void certify_at(int upcard, int forb, const Counts &node_rem, const double *pc, const ptrdiff_t *child,
-                  const Layer *ch, const Vals *chv, int n, const double *g, size_t stride, size_t lane,
-                  int total, int m, bool dbl_skipped, size_t &skipped, double &cert_last, double &cert_info,
-                  size_t &devals) const {
-    ++skipped;
-    double pbust = 0;
-    for (int c = 0; c < NR; ++c)
-      if (total + c + 1 > 21) pbust += pc[c];
-    const double stand = g[stand_class(total) * stride + lane];
-    // Upper bound on the expected number of cards a hitting line can show
-    // the later hands: the first for certain, the (j+1)-th only if the first
-    // j did not bust. After i-1 cards the hand has at least total + i - 1,
-    // and the chance that the next card still fits is at most (cards small
-    // enough, counted now) / (cards left that the hole card allows).
-    double draws = 1.0;
-    {
-      double reach = 1.0 - pbust;
-      int forbidden = forb >= 0 ? node_rem[forb] : 0;
-      for (int i = 2; total + i - 1 <= 20 && reach > 0; ++i) {
-        draws += reach;
-        int fit = 0;
-        for (int c = 0; c < NR && total + i - 1 + c + 1 <= 21; ++c) fit += node_rem[c];
-        double denom = double(n - (i - 1) - forbidden);
-        reach *= denom > 0 ? std::min(1.0, fit / denom) : 1.0;
-      }
-    }
-    double margin = stand - (g[5 * stride + lane] - pbust);  // needs nothing beyond this node
-    bool enough = !dbl_skipped && (m == 0 ? margin >= 0 : margin / draws >= 0.1);
-    if (!enough) {
-      // one level deeper: the dealer values at the non-busting children
-      double own = -pbust, one_card = -pbust;
-      for (int c = 0; c < NR && total + c + 1 <= 21; ++c) {
-        if (pc[c] <= 0) continue;
-        double gc[6];
-        Counts rem = node_rem;
-        rem[c]--;
-        if (ch && child[c] >= 0 && (ch->w[child[c]] & GNEED)) {
-          const double *src = &chv->val[chv->off[child[c]] * stride];
-          for (int j = 0; j < 6; ++j) gc[j] = src[j * stride + lane];
-        } else {
-          stand_values_for(dealer_, rem, n - 1, upcard, gc);
-          ++devals;
-        }
-        int t2 = total + c + 1;
-        double pc2[NR], pbust2 = 0;
-        next_card_probs(rem, n - 1, forb, pc2);
-        for (int c2 = 0; c2 < NR; ++c2)
-          if (t2 + c2 + 1 > 21) pbust2 += pc2[c2];
-        double stand2 = gc[stand_class(t2)];
-        own += pc[c] * std::max(stand2, gc[5] - pbust2);
-        one_card += pc[c] * stand2;
-      }
-      margin = std::max(margin, stand - own);
-      if (dbl_skipped) {
-        // doubling: twice the one-card result, and later hands see one card
-        double dm = stand - 2.0 * one_card;
-        if (m == 0) cert_last = std::min(cert_last, dm);
-        else cert_info = std::min(cert_info, dm);
-      }
-    }
-    if (m == 0) cert_last = std::min(cert_last, margin);
-    else cert_info = std::min(cert_info, margin / draws);
-  }
 
   void compute_range(EvalCtx &cx, const Layer &l, Vals &lv, const Layer *ch, const Vals *chv, int k,
                      size_t a, size_t b, Stats &stats) const {
@@ -992,7 +869,7 @@ class LayeredSplitSolver {
             hitmask |= 1u << pi.fbit[c0];
             anydbl |= pi.fdbl[c0];
           }
-          hitmask &= hit_mask_;
+          hitmask &= HITTABLE;
         }
         // Unpack what this group needs from each child into small dense
         // tables indexed by the child's state, so the loops over states are
@@ -1052,11 +929,9 @@ class LayeredSplitSolver {
           int total = bit < 22 ? bit : bit - 10;
           double stand = g[stand_class(total)] + nextv;
           double best = stand, hit = NEG_INF;
-          if (!pi.locked && ((hit_mask_ >> bit) & 1)) {
+          if (!pi.locked && ((HITTABLE >> bit) & 1)) {
             hit = hit_value(bit);
             if (hit > best) best = hit;
-          } else if (opt_.stand_hard17 && !pi.locked && bit >= 17 && bit <= 20) {
-            certify(cx, t, child, ch, chv, n, g, bit, m, false, stats);
           }
           hv[idx++] = best;
           if (k == 0 && !cx.root.lone && cx.root.second < 0) {
@@ -1073,12 +948,8 @@ class LayeredSplitSolver {
           double stand = g[stand_class(total)] + nextv;
           double best = stand, hit = NEG_INF, dbl = NEG_INF;
           if (!pi.locked) {
-            if ((hit_mask_ >> bit) & 1) {
-              hit = hit_value(bit);
-              if (hit > best) best = hit;
-            } else {
-              certify(cx, t, child, ch, chv, n, g, bit, m, pi.fdbl_skipped[c0], stats);
-            }
+            hit = hit_value(bit);
+            if (hit > best) best = hit;
             if (pi.fdbl[c0]) {
               dbl = 0;
               for (int q = 0; q < nact; ++q) {
@@ -1331,7 +1202,7 @@ class LayeredSplitSolver {
               hitmask |= 1u << pi.fbit[c0];
               anydbl |= pi.fdbl[c0];
             }
-            hitmask &= hit_mask_;
+            hitmask &= HITTABLE;
           }
           // Per child: where each of its states' values sit (dptr), the value
           // if the hand busts on that card (cbust), the hands still to come
@@ -1375,15 +1246,6 @@ class LayeredSplitSolver {
               vaxpy(out, t.pc[c], dptr[c][tr[c]], BB);
             }
           };
-          auto certify_lanes = [&](int bit, bool dbl_skipped) {
-            for (int b = 0; b < B; ++b) {
-              if (!t.feasible[b]) continue;
-              double pcb[NR];
-              for (int c = 0; c < NR; ++c) pcb[c] = t.pc[c][b];
-              certify_at(bx.u[b], bx.forb[b], t.rem[b], pcb, child, ch, chv, n, g, BB, size_t(b), bit, m,
-                         dbl_skipped, stats.skipped[b], stats.cert_last[b], stats.cert_info[b], stats.devals);
-            }
-          };
           double *hv = v + size_t(lv.hoff[i * NH_ + hc]) * BB;
           double hit[BMAX];
           while (hm) {
@@ -1392,11 +1254,9 @@ class LayeredSplitSolver {
             int total = bit < 22 ? bit : bit - 10;
             const double *gs = g + size_t(stand_class(total)) * BB;
             vadd(hv, gs, nextv, BB);
-            if (!pi.locked && ((hit_mask_ >> bit) & 1)) {
+            if (!pi.locked && ((HITTABLE >> bit) & 1)) {
               hit_value(bit, hit);
               vmax_into(hv, hit, BB);
-            } else {
-              if (opt_.stand_hard17 && !pi.locked && bit >= 17 && bit <= 20) certify_lanes(bit, false);
             }
             hv += BB;
           }
@@ -1408,12 +1268,8 @@ class LayeredSplitSolver {
             const double *gs = g + size_t(stand_class(total)) * BB;
             vadd(hv, gs, nextv, BB);
             if (!pi.locked) {
-              if ((hit_mask_ >> bit) & 1) {
-                hit_value(bit, hit);
-                vmax_into(hv, hit, BB);
-              } else {
-                certify_lanes(bit, pi.fdbl_skipped[c0]);
-              }
+              hit_value(bit, hit);
+              vmax_into(hv, hit, BB);
               if (pi.fdbl[c0]) {
                 double dbl[BMAX], term[BMAX];
                 vzero(dbl, BB);

@@ -134,20 +134,14 @@
 <body>
 <main>
   <h1>Exact blackjack solver: time to solve, by iteration</h1>
-  <p class="sub">Every iteration arrives at the same numbers. Filled points enumerate every possible playout,
-    including all resplits, with no sampling; ringed points skip some provably or near-provably bad moves and say
-    what they rely on. Each chart is one benchmark case; time is on a log scale. Timings move by about 20% with
-    whatever else the machine is doing.</p>
+  <p class="sub">Every iteration computes the same exact numbers by evaluating every possible playout, including all
+    resplits: no sampling, no pruning. What changes is how long it takes. Each chart is one benchmark case; time is
+    on a log scale. Timings move by about 20% with whatever else the machine is doing.</p>
   <div class="meta" id="machine"></div>
 
   <div class="tiles" id="tiles"></div>
 
   <h2>Solve time per iteration</h2>
-  <div class="legend">
-    <span><svg viewBox="0 0 14 14"><circle class="k1" cx="7" cy="7" r="5"/></svg>every line of play enumerated</span>
-    <span><svg viewBox="0 0 14 14"><circle class="k2" cx="7" cy="7" r="4.5"/></svg>relies on a stated assumption (see the table)</span>
-    <span><svg viewBox="0 0 14 14"><circle class="k3" cx="7" cy="7" r="4"/></svg>no result</span>
-  </div>
   <div class="charts" id="charts"></div>
 
   <h2>Iterations</h2>

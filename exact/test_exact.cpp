@@ -5,8 +5,7 @@
 //        SplitSolverTD  - top-down memoised, settles finished hands early
 //        LayeredSplitSolver - the fast one, single- and multi-threaded
 //   3. mid-split roots of the layered solver recombine to the fresh-split value
-//   4. batched multi-upcard evaluation, shared plans and the certified skip mode
-//      against plain full enumeration
+//   4. batched multi-upcard evaluation and shared plans against one position at a time
 #include <cstdio>
 #include <cstdlib>
 #include <random>
@@ -173,10 +172,8 @@ int main(int argc, char **argv) {
   }
   printf("split solvers ok: %d cases (%d with all three solvers), worst diff %.2e\n", ran, triple, worst);
 
-  // 4. batched evaluation (several upcards per pass) against one at a time,
-  //    and the certified "skip hits on hard 17+" mode against full enumeration
-  int batches = 0, certified = 0, declined = 0;
-  double weakest = 1e9;
+  // 4. batched evaluation (several upcards per pass) against one at a time
+  int batches = 0, positions = 0;
   for (int trial = 0; trial < (quick ? 12 : 40); ++trial) {
     Rules r;
     r.h17 = rnd(0, 1);
@@ -209,30 +206,15 @@ int main(int argc, char **argv) {
     if (ups.empty()) continue;
     auto got = strict.evaluate_batch(plan, unseen, ups);
     ++batches;
-    SplitOptions opt;
-    opt.stand_hard17 = true;
-    LayeredSplitSolver fast(r, dt, 2, opt);
-    auto fast_plan = fast.plan(supply, p);
-    auto fast_got = fast.evaluate_batch(fast_plan, unseen, ups);
     for (size_t j = 0; j < ups.size(); ++j) {
       double one = strict.evaluate(plan, unseen[j], ups[j]).value;
       check("batched vs single evaluation", got[j].value, one);
       double own_plan = strict.solve(unseen[j], p, ups[j]).value;  // plan specialised to this upcard
       check("shared plan vs own plan", one, own_plan);
-      const auto &f = fast_got[j];
-      if (f.cert_last >= 0 && f.cert_info >= 0.02) {
-        check("certified skip vs full enumeration", f.value, one);
-        check("certified skip, batched vs single", f.value, fast.evaluate(fast_plan, unseen[j], ups[j]).value);
-        weakest = std::min(weakest, f.cert_info);
-        ++certified;
-      } else {
-        ++declined;
-      }
+      ++positions;
     }
   }
-  printf("batched evaluation ok: %d batches; certified skip agreed with full enumeration in %d positions "
-         "(weakest accepted margin %.3f), %d positions declined by their certificate\n",
-         batches, certified, weakest, declined);
+  printf("batched evaluation ok: %d batches, %d positions\n", batches, positions);
 
   if (failures) {
     printf("%d FAILURES\n", failures);

@@ -112,18 +112,6 @@ VARIANTS = [
                 "dealer evaluations run eight card compositions per pass. Profiling shows the dealer "
                 "evaluation is now most of the remaining time.",
     },
-    {
-        "variant": "stand17",
-        "label": "Skip hits on hard 17+ (certified)",
-        "note": "Two thirds of the states only exist to confirm that hitting a hard 17-20 in a split hand is "
-                "bad. They are no longer enumerated; instead every skipped move is checked against a sound "
-                "upper bound. The bound is complete on the last hand to be played. While other hands are "
-                "still waiting it holds as long as seeing one extra card is worth less than the certified "
-                "margin (a few percent of a bet) to them; the largest value measured in full enumerations "
-                "is under 0.1%. Positions whose margin is below 2% are solved by full enumeration.",
-        "assumption": "Relies on: one extra seen card is worth less than the certified margin to the hands "
-                      "still to be played. Off by default (--assume-stand17).",
-    },
 ]
 
 ORIGINAL = {
@@ -273,7 +261,7 @@ def backfill(timeout: float):
 
     # The multi-threaded build needs the machine to itself; the single-threaded
     # iterations can then share it (two memory-hungry hash solvers in series).
-    for name in ("threads", "shared-plan", "simd", "chunks", "current", "stand17"):
+    for name in ("threads", "shared-plan", "simd", "chunks", "current"):
         go(name)
     with ThreadPoolExecutor(3) as pool:
         futures = [pool.submit(go, "bfs-dealer"), pool.submit(go, "layered"),
