@@ -32,6 +32,8 @@
 
 namespace bj {
 
+inline bool g_prefetch = true;  // benchmark switch
+
 struct SplitOptions {
   // Report the largest observed value, to the hands still to be played, of
   // seeing one extra card (a diagnostic; costs a little time).
@@ -992,26 +994,26 @@ class LayeredSplitSolver {
   // Two-lane vector view of the batched values (lanes are upcards). BB is
   // always even, and nothing here needs more than 8-byte alignment.
   typedef double V2 __attribute__((vector_size(16), aligned(8), may_alias));
-  static void vzero(double *o, size_t bb) {
+  static inline __attribute__((always_inline)) void vzero(double *o, size_t bb) {
     for (size_t b = 0; b < bb; ++b) o[b] = 0.0;
   }
-  static void vaxpy(double *o, const double *p, const double *x, size_t bb) {  // o += p * x
+  static inline __attribute__((always_inline)) void vaxpy(double *o, const double *p, const double *x, size_t bb) {  // o += p * x
     for (size_t b = 0; b < bb; b += 2) *(V2 *)(o + b) += *(const V2 *)(p + b) * *(const V2 *)(x + b);
   }
-  static void vaxpy_max(double *o, const double *p, const double *x, const double *y, size_t bb) {  // o += p * max(x, y)
+  static inline __attribute__((always_inline)) void vaxpy_max(double *o, const double *p, const double *x, const double *y, size_t bb) {  // o += p * max(x, y)
     for (size_t b = 0; b < bb; b += 2) {
       V2 xv = *(const V2 *)(x + b), yv = *(const V2 *)(y + b);
       V2 m = xv > yv ? xv : yv;
       *(V2 *)(o + b) += *(const V2 *)(p + b) * m;
     }
   }
-  static void vmax_into(double *o, const double *x, size_t bb) {  // o = max(o, x)
+  static inline __attribute__((always_inline)) void vmax_into(double *o, const double *x, size_t bb) {  // o = max(o, x)
     for (size_t b = 0; b < bb; b += 2) {
       V2 ov = *(V2 *)(o + b), xv = *(const V2 *)(x + b);
       *(V2 *)(o + b) = ov > xv ? ov : xv;
     }
   }
-  static void vadd(double *o, const double *x, const double *y, size_t bb) {  // o = x + y
+  static inline __attribute__((always_inline)) void vadd(double *o, const double *x, const double *y, size_t bb) {  // o = x + y
     for (size_t b = 0; b < bb; b += 2) *(V2 *)(o + b) = *(const V2 *)(x + b) + *(const V2 *)(y + b);
   }
 
@@ -1059,9 +1061,19 @@ class LayeredSplitSolver {
   // batch lane b lives at val[(off[i] + q) * BB + b].
   void compute_range_batch(BatchCtx &bx, const Layer &l, Vals &lv, const Layer *ch, const Vals *chv, int k,
                            size_t a, size_t b_end, BatchStats &stats) const {
+    switch (bx.BB) {
+      case 2: return compute_range_batch_t<2>(bx, l, lv, ch, chv, k, a, b_end, stats);
+      case 4: return compute_range_batch_t<4>(bx, l, lv, ch, chv, k, a, b_end, stats);
+      case 6: return compute_range_batch_t<6>(bx, l, lv, ch, chv, k, a, b_end, stats);
+      case 8: return compute_range_batch_t<8>(bx, l, lv, ch, chv, k, a, b_end, stats);
+      default: return compute_range_batch_t<10>(bx, l, lv, ch, chv, k, a, b_end, stats);
+    }
+  }
+  template <size_t BB>
+  void compute_range_batch_t(BatchCtx &bx, const Layer &l, Vals &lv, const Layer *ch, const Vals *chv, int k,
+                             size_t a, size_t b_end, BatchStats &stats) const {
     const PairInfo &pi = bx.pair;
     const int B = bx.B;
-    const size_t BB = size_t(bx.BB);
     size_t n1 = ch ? ch->size() : 0;
     size_t cur[NR];
     for (int c = 0; c < NR; ++c)
@@ -1359,6 +1371,674 @@ class LayeredSplitSolver {
               }
             }
             hv += BB;
+          }
+        }
+      }
+    }
+  }
+
+  // =========================================================================
+  // All pairs together
+  // =========================================================================
+  // Two different pairs often reach the same set of removed cards (counting
+  // the two pair cards themselves), and most of what is computed at a node
+  // depends only on that set: the dealer values, and every state of the last
+  // hand to be played (it has no hands waiting behind it). So those are kept
+  // once, in a lattice shared by all pairs, and each pair keeps only a small
+  // overlay with its "needs a card" states and the hands that do have others
+  // waiting. Every state of every pair is still evaluated; shared ones once.
+ public:
+  struct GLayer {  // shared: indexed by cards removed, the two pair cards included
+    std::vector<uint64_t> key;
+    std::vector<uint32_t> h;  // last-hand states of 3+ cards
+    std::vector<uint32_t> d;  // last-hand states of exactly two cards (may double)
+    std::vector<uint8_t> g;   // dealer values needed
+    size_t size() const { return key.size(); }
+  };
+  struct OLayer {  // one pair's own states
+    std::vector<uint64_t> key;
+    std::vector<uint32_t> w;  // "needs a card" states
+    std::vector<uint32_t> h;  // NH-1 per node: hands with others waiting, 3+ cards
+    std::vector<uint16_t> f;  // NH-1 per node: the same, two cards
+    size_t size() const { return key.size(); }
+  };
+  struct JointPlan {
+    Counts supply{};  // the shoe, before the upcard or any pair card is removed
+    std::vector<int> pairs;
+    std::vector<GLayer> g;
+    std::vector<OLayer> o[NR];
+    size_t pair_nodes = 0, gnodes = 0, onodes = 0, max_gnodes = 0, max_onodes[NR] = {0};
+    uint64_t gvals = 0, ovals = 0, max_gvals = 0, max_ovals[NR] = {0};
+    double seconds = 0;
+  };
+  struct JointWorkspace {
+    Vals g[2];
+    Vals o[NR][2];
+  };
+  size_t joint_bytes(const JointPlan &J, int nb) const {
+    size_t stride = size_t(nb + 1) & ~size_t(1);
+    size_t bytes = 2 * (8 * stride * size_t(J.max_gvals) + 8 * (J.max_gnodes + 1));
+    for (int p : J.pairs) bytes += 2 * (8 * stride * size_t(J.max_ovals[p]) + (8 + 2 * size_t(NH_)) * (J.max_onodes[p] + 1));
+    return bytes;
+  }
+
+  // Forward passes of every pair, folded into one shared lattice.
+  JointPlan joint_plan(const Counts &shoe, const std::vector<int> &pairs) {
+    auto t0 = std::chrono::steady_clock::now();
+    JointPlan J;
+    J.supply = shoe;
+    J.pairs = pairs;
+    const size_t NO = size_t(NH_ - 1);
+    for (int p : pairs) {
+      PairInfo pi;
+      set_pair(pi, p);
+      if (pi.locked) throw std::invalid_argument("joint plan: split aces that cannot be hit are solved separately");
+      Counts sup = shoe;
+      sup[p] -= 2;
+      Plan P = plan(sup, p);
+      const size_t nl = P.layers.size();
+      if (J.g.size() < nl + 2) J.g.resize(nl + 2);
+      J.o[p].assign(nl + 2, OLayer{});
+      J.pair_nodes += P.nodes;
+      const uint64_t shift2 = 2 * unit(p);
+      parallel_chunks(nl, threads_, [&](size_t k) {
+        const Layer &l = P.layers[k];
+        const size_t n = l.size();
+        GLayer add;
+        add.key.resize(n);
+        add.h.resize(n);
+        add.d.resize(n);
+        add.g.resize(n);
+        OLayer &ol = J.o[p][k + 2];
+        for (size_t i = 0; i < n; ++i) {
+          uint64_t key = l.key[i] + shift2;
+          add.key[i] = key;
+          add.h[i] = l.h[i * NH_];
+          uint32_t d = 0;
+          for (uint32_t fm = l.f[i * NH_]; fm; fm &= fm - 1) d |= 1u << pi.fbit[__builtin_ctz(fm)];
+          add.d[i] = d;
+          add.g[i] = (l.w[i] & GNEED) != 0;
+          uint32_t w = l.w[i] & WMASK;
+          bool own = w != 0;
+          for (int hc = 1; hc < NH_; ++hc) own |= (l.h[i * NH_ + hc] | l.f[i * NH_ + hc]) != 0;
+          if (own) {
+            ol.key.push_back(key);
+            ol.w.push_back(w);
+            for (int hc = 1; hc < NH_; ++hc) {
+              ol.h.push_back(l.h[i * NH_ + hc]);
+              ol.f.push_back(l.f[i * NH_ + hc]);
+            }
+          }
+        }
+        // fold into the shared layer (each k touches its own layer)
+        GLayer &gl = J.g[k + 2];
+        if (gl.size() == 0) {
+          gl = std::move(add);
+          return;
+        }
+        GLayer out;
+        size_t na = gl.size(), nb = add.size();
+        out.key.reserve(na + nb);
+        out.h.reserve(na + nb);
+        out.d.reserve(na + nb);
+        out.g.reserve(na + nb);
+        size_t ia = 0, ib = 0;
+        while (ia < na || ib < nb) {
+          uint64_t ka = ia < na ? gl.key[ia] : ~0ull, kb = ib < nb ? add.key[ib] : ~0ull;
+          uint64_t key = ka < kb ? ka : kb;
+          uint32_t h = 0, d = 0;
+          uint8_t g = 0;
+          if (ka == key) h |= gl.h[ia], d |= gl.d[ia], g |= gl.g[ia], ++ia;
+          if (kb == key) h |= add.h[ib], d |= add.d[ib], g |= add.g[ib], ++ib;
+          out.key.push_back(key);
+          out.h.push_back(h);
+          out.d.push_back(d);
+          out.g.push_back(g);
+        }
+        gl = std::move(out);
+      });
+      (void)NO;
+    }
+    for (const GLayer &gl : J.g) {
+      uint64_t v = 0;
+      for (size_t i = 0; i < gl.size(); ++i)
+        v += (gl.g[i] ? 6 : 0) + __builtin_popcount(gl.h[i]) + __builtin_popcount(gl.d[i]);
+      J.gnodes += gl.size();
+      J.gvals += v;
+      J.max_gnodes = std::max(J.max_gnodes, gl.size());
+      J.max_gvals = std::max(J.max_gvals, v);
+    }
+    for (int p : pairs)
+      for (const OLayer &ol : J.o[p]) {
+        uint64_t v = 0;
+        for (size_t i = 0; i < ol.size(); ++i) {
+          v += __builtin_popcount(ol.w[i]);
+          for (size_t q = 0; q < NO; ++q) v += __builtin_popcount(ol.h[i * NO + q]) + __builtin_popcount(ol.f[i * NO + q]);
+        }
+        J.onodes += ol.size();
+        J.ovals += v;
+        J.max_onodes[p] = std::max(J.max_onodes[p], ol.size());
+        J.max_ovals[p] = std::max(J.max_ovals[p], v);
+      }
+    J.seconds = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
+    return J;
+  }
+
+  // Backward pass for a batch of upcards over the shared lattice and every
+  // pair's overlay. Returns value[pair][lane]: the expected return of
+  // splitting that pair against the lane's upcard.
+  std::vector<std::array<double, BMAX>> joint_evaluate(const JointPlan &J, const std::vector<int> &upcards,
+                                                       int threads = -1, JointWorkspace *ws = nullptr) const {
+    if (threads < 0) threads = threads_;
+    const int B = int(upcards.size());
+    if (B < 1 || B > BMAX) throw std::invalid_argument("bad batch");
+    JCtx jx;
+    jx.B = B;
+    jx.BB = (B + 1) & ~1;
+    jx.supply = J.supply;
+    jx.N = total_cards(J.supply) - 1;
+    for (int b = 0; b < B; ++b) {
+      jx.u[b] = upcards[b];
+      jx.forb[b] = forbidden_hole(upcards[b]);
+      jx.S[b] = J.supply;
+      jx.S[b][upcards[b]]--;
+    }
+    jx.dbl_ok = 0;
+    for (int bit = 0; bit < 32; ++bit) {
+      if (bit >= 22 && bit - 20 < 2) continue;
+      int total = bit < 22 ? bit : bit - 10;
+      bool d = rules_.das && total != 21;
+      if (rules_.double_on == DoubleOn::NineToEleven && (total < 9 || total > 11)) d = false;
+      if (rules_.double_on == DoubleOn::TenToEleven && (total < 10 || total > 11)) d = false;
+      if (d) jx.dbl_ok |= 1u << bit;
+    }
+    PairInfo pinfo[NR];
+    for (int p : J.pairs) set_pair(pinfo[p], p);
+    JointWorkspace local;
+    JointWorkspace &W = ws ? *ws : local;
+    const size_t BB = size_t(jx.BB), NO = size_t(NH_ - 1);
+    for (int j = 0; j < 2; ++j) {
+      W.g[j].off.ensure(J.max_gnodes + 1);
+      W.g[j].val.ensure(J.max_gvals * BB);
+      for (int p : J.pairs) {
+        W.o[p][j].off.ensure(J.max_onodes[p] + 1);
+        W.o[p][j].hoff.ensure(J.max_onodes[p] * NO + 1);
+        W.o[p][j].val.ensure(J.max_ovals[p] * BB);
+      }
+    }
+    std::vector<std::array<double, BMAX>> root(NR);
+    for (auto &r : root) r.fill(0.0);
+    const int nl = int(J.g.size());
+    for (int L = nl - 1; L >= 2; --L) {
+      const GLayer &gl = J.g[L];
+      const GLayer *gch = L + 1 < nl ? &J.g[L + 1] : nullptr;
+      Vals &gv = W.g[L & 1];
+      const Vals *gcv = gch ? &W.g[(L + 1) & 1] : nullptr;
+      {
+        size_t n = gl.size();
+        int T = n >= 512 ? threads : 1;
+        const size_t CH = 1024, nch = (n + CH - 1) / CH;
+        std::vector<uint64_t> base(nch + 1, 0);
+        parallel_chunks(nch, T, [&](size_t ci) {
+          size_t a = ci * CH, b = std::min(n, a + CH);
+          uint64_t t = 0;
+          for (size_t i = a; i < b; ++i) {
+            gv.off[i] = t;
+            t += uint64_t((gl.g[i] ? 6 : 0) + __builtin_popcount(gl.h[i]) + __builtin_popcount(gl.d[i]));
+          }
+          base[ci + 1] = t;
+        });
+        for (size_t ci = 1; ci <= nch; ++ci) base[ci] += base[ci - 1];
+        gv.off[n] = base[nch];
+        parallel_chunks(nch, T, [&](size_t ci) {
+          size_t a = ci * CH, b = std::min(n, a + CH);
+          if (base[ci])
+            for (size_t i = a; i < b; ++i) gv.off[i] += base[ci];
+          global_range(jx, gl, gv, gch, gcv, L, a, b);
+        });
+      }
+      for (int p : J.pairs) {
+        if (size_t(L) >= J.o[p].size() || J.o[p][L].size() == 0) continue;
+        const OLayer &ol = J.o[p][L];
+        const OLayer *och = size_t(L + 1) < J.o[p].size() ? &J.o[p][L + 1] : nullptr;
+        Vals &ov = W.o[p][L & 1];
+        const Vals *ocv = och ? &W.o[p][(L + 1) & 1] : nullptr;
+        size_t n = ol.size();
+        int T = n >= 512 ? threads : 1;
+        const size_t CH = 1024, nch = (n + CH - 1) / CH;
+        std::vector<uint64_t> base(nch + 1, 0);
+        parallel_chunks(nch, T, [&](size_t ci) {
+          size_t a = ci * CH, b = std::min(n, a + CH);
+          uint64_t t = 0;
+          for (size_t i = a; i < b; ++i) {
+            int rel = __builtin_popcount(ol.w[i]);
+            for (size_t q = 0; q < NO; ++q) {
+              ov.hoff[i * NO + q] = uint16_t(rel);
+              rel += __builtin_popcount(ol.h[i * NO + q]) + __builtin_popcount(ol.f[i * NO + q]);
+            }
+            ov.off[i] = t;
+            t += uint64_t(rel);
+          }
+          base[ci + 1] = t;
+        });
+        for (size_t ci = 1; ci <= nch; ++ci) base[ci] += base[ci - 1];
+        parallel_chunks(nch, T, [&](size_t ci) {
+          size_t a = ci * CH, b = std::min(n, a + CH);
+          if (base[ci])
+            for (size_t i = a; i < b; ++i) ov.off[i] += base[ci];
+          overlay_range(jx, pinfo[p], ol, ov, och, ocv, gl, gv, gch, gcv, L, a, b, root[size_t(p)].data());
+        });
+      }
+    }
+    return root;
+  }
+
+ private:
+  struct JCtx {
+    int B = 0, BB = 0;
+    Counts S[BMAX];  // unseen cards per lane before any pair card is removed
+    Counts supply;
+    int N = 0, u[BMAX], forb[BMAX];
+    uint32_t dbl_ok = 0;  // two-card states the rules allow to double
+  };
+  struct JTmp {
+    Counts rem[BMAX];
+    double pc[NR][BMAX];
+    bool any[NR];
+    bool feasible[BMAX];
+  };
+  // Remaining cards and next-card probabilities of every lane at one node.
+  void node_probs(const JCtx &jx, uint64_t key, int n, JTmp &t) const {
+    int drawn[NR];
+    for (int r = 0; r < NR; ++r) drawn[r] = field(key, r);
+    for (int c = 0; c < NR; ++c) {
+      t.any[c] = false;
+      for (int b = 0; b < jx.BB; ++b) t.pc[c][b] = 0.0;
+    }
+    for (int b = 0; b < jx.B; ++b) {
+      bool ok = true;
+      for (int r = 0; r < NR; ++r) {
+        t.rem[b][r] = jx.S[b][r] - drawn[r];
+        ok &= t.rem[b][r] >= 0;
+      }
+      t.feasible[b] = ok;
+      if (!ok) continue;
+      double p1[NR];
+      next_card_probs(t.rem[b], n, jx.forb[b], p1);
+      for (int c = 0; c < NR; ++c) {
+        t.pc[c][b] = p1[c];
+        t.any[c] |= p1[c] > 0;
+      }
+    }
+  }
+  // Index of `target` in a sorted key array, advancing a cursor; -1 if absent.
+  static ptrdiff_t seek(const std::vector<uint64_t> &keys, size_t &cur, uint64_t target) {
+    const size_t n = keys.size();
+    size_t x = cur;
+    // a short linear scan, then gallop: an overlay is sparse in the shared layer
+    for (int step = 0; step < 8 && x < n && keys[x] < target; ++step) ++x;
+    if (x < n && keys[x] < target) {
+      size_t lo = x, jump = 16;
+      while (lo + jump < n && keys[lo + jump] < target) lo += jump, jump *= 2;
+      size_t hi = std::min(n, lo + jump + 1);
+      x = size_t(std::lower_bound(keys.begin() + long(lo), keys.begin() + long(hi), target) - keys.begin());
+    }
+    cur = x;
+    return x < n && keys[x] == target ? ptrdiff_t(x) : -1;
+  }
+  static size_t lower(const std::vector<uint64_t> &keys, uint64_t target) {
+    return size_t(std::lower_bound(keys.begin(), keys.end(), target) - keys.begin());
+  }
+
+  // Shared lattice: dealer values and last-hand states of nodes [a, b_end).
+  // The kernels are compiled once per stride so that the short loops over
+  // lanes unroll into straight-line vector code.
+  void global_range(const JCtx &jx, const GLayer &l, Vals &lv, const GLayer *ch, const Vals *chv, int L, size_t a,
+                    size_t b_end) const {
+    switch (jx.BB) {
+      case 2: return global_range_t<2>(jx, l, lv, ch, chv, L, a, b_end);
+      case 4: return global_range_t<4>(jx, l, lv, ch, chv, L, a, b_end);
+      case 6: return global_range_t<6>(jx, l, lv, ch, chv, L, a, b_end);
+      case 8: return global_range_t<8>(jx, l, lv, ch, chv, L, a, b_end);
+      default: return global_range_t<10>(jx, l, lv, ch, chv, L, a, b_end);
+    }
+  }
+  template <size_t BB>
+  void global_range_t(const JCtx &jx, const GLayer &l, Vals &lv, const GLayer *ch, const Vals *chv, int L, size_t a,
+                      size_t b_end) const {
+    const int B = jx.B;
+    size_t cur[NR];
+    for (int c = 0; c < NR; ++c) cur[c] = ch ? lower(ch->key, l.key[a] + unit(c)) : 0;
+    const int n = jx.N - L;
+    const DealerUnion &U = *dealer_.uni;
+    constexpr int BLOCK = 32;
+    JTmp tmp[BLOCK];
+    ptrdiff_t childs[BLOCK][NR];
+    std::vector<PendingU> upend;
+    upend.reserve(BLOCK);
+    std::unique_ptr<double[]> sval(new double[DealerUnion::MAX_UNION_NODES]), gstable(new double[U.groups.size() + 1]);
+    uint64_t cached_sig = 0;
+    bool have_sig = false;
+    double minus1[BMAX + 2], minus2[BMAX + 2];
+    for (int b = 0; b < BMAX + 2; ++b) minus1[b] = -1.0, minus2[b] = -2.0;
+    BatchCtx bx;  // what union_lanes needs
+    bx.B = B;
+    for (int b = 0; b < B; ++b) bx.u[b] = jx.u[b];
+
+    for (size_t i0 = a; i0 < b_end; i0 += BLOCK) {
+      const size_t i1 = std::min(b_end, i0 + BLOCK);
+      // ---- pass 1: children and dealer values ----
+      for (size_t i = i0; i < i1; ++i) {
+        JTmp &t = tmp[i - i0];
+        ptrdiff_t *child = childs[i - i0];
+        uint64_t key = l.key[i];
+        node_probs(jx, key, n, t);
+        for (int c = 0; c < NR; ++c) {
+          child[c] = (t.any[c] && ch) ? seek(ch->key, cur[c], key + unit(c)) : -1;
+          if (child[c] >= 0 && g_prefetch) {
+            // pass 2 reads this child's values; start fetching them now
+            const char *p0 = (const char *)&chv->val[chv->off[child[c]] * BB];
+            const char *p1 = (const char *)&chv->val[chv->off[child[c] + 1] * BB];
+            for (const char *q = p0; q < p1; q += 64) __builtin_prefetch(q);
+          }
+        }
+        if (!l.g[i]) continue;
+        double *v = &lv.val[lv.off[i] * BB];
+        vzero(v, 6 * BB);
+        bool all_have = ch != nullptr;
+        for (int c = 0; c < NR && all_have; ++c)
+          if (t.any[c] && !(child[c] >= 0 && ch->g[child[c]])) all_have = false;
+        if (all_have) {
+          // the dealer's distribution is a martingale in the cards drawn
+          for (int c = 0; c < NR; ++c) {
+            if (!t.any[c]) continue;
+            const double *gc = &chv->val[chv->off[child[c]] * BB];
+            for (size_t q = 0; q < 6; ++q) vaxpy(v + q * BB, t.pc[c], gc + q * BB, BB);
+          }
+        } else {
+          upend.push_back({i, v});
+        }
+      }
+      // direct dealer evaluations: one walk for all upcards, shared stable part
+      for (size_t j0 = 0; j0 < upend.size();) {
+        uint64_t sig = l.key[upend[j0].i] >> SH_[U.cut];
+        size_t j1 = j0 + 1;
+        while (j1 < upend.size() && j1 - j0 < 8 && (l.key[upend[j1].i] >> SH_[U.cut]) == sig) ++j1;
+        size_t cnt = j1 - j0;
+        Counts base[8];
+        for (size_t q = 0; q < cnt; ++q) {
+          uint64_t key = l.key[upend[j0 + q].i];
+          for (int r = 0; r < NR; ++r) base[q][r] = jx.supply[r] - field(key, r);
+        }
+        if (!have_sig || sig != cached_sig) {
+          U.stable(base[0], sval.get(), gstable.get());
+          cached_sig = sig;
+          have_sig = true;
+        }
+        if (cnt > 4) union_lanes<8>(U, sval.get(), gstable.get(), base, cnt, n, bx, upend.data() + j0, BB);
+        else if (cnt > 2) union_lanes<4>(U, sval.get(), gstable.get(), base, cnt, n, bx, upend.data() + j0, BB);
+        else union_lanes<2>(U, sval.get(), gstable.get(), base, cnt, n, bx, upend.data() + j0, BB);
+        j0 = j1;
+      }
+      upend.clear();
+      // ---- pass 2: last-hand states ----
+      for (size_t i = i0; i < i1; ++i) {
+        uint32_t hm = l.h[i], dm = l.d[i];
+        if (!(hm | dm)) continue;
+        const JTmp &t = tmp[i - i0];
+        const ptrdiff_t *child = childs[i - i0];
+        if (!l.g[i]) missing("G");
+        double *v = &lv.val[lv.off[i] * BB];
+        const double *g = v;
+        const uint32_t hitmask = (hm | dm) & HITTABLE;
+        const bool anydbl = (dm & jx.dbl_ok) != 0;
+        int act[NR], nact = 0;
+        const double *dptr[NR][33], *cgp[NR];
+        for (int c = 0; c < NR; ++c) {
+          if (!t.any[c]) continue;
+          bool bust;
+          uint32_t need = shift(hitmask, c, bust);
+          cgp[c] = nullptr;
+          if (need) {
+            ptrdiff_t j = child[c];
+            if (j < 0) missing("node");
+            uint32_t cm = ch->h[j];
+            if (need & ~cm) missing("H");
+            const double *src = &chv->val[(chv->off[j] + (ch->g[j] ? 6 : 0)) * BB];
+            for (; cm; cm &= cm - 1, src += BB) dptr[c][__builtin_ctz(cm)] = src;
+            if (anydbl) {
+              if (!ch->g[j]) missing("G");
+              cgp[c] = &chv->val[chv->off[j] * BB];
+            }
+          }
+          dptr[c][32] = minus1;
+          act[nact++] = c;
+        }
+        auto hit_value = [&](int bit, double *out) {
+          const uint8_t *tr = trans2_[bit];
+          vzero(out, BB);
+          for (int q = 0; q < nact; ++q) {
+            int c = act[q];
+            vaxpy(out, t.pc[c], dptr[c][tr[c]], BB);
+          }
+        };
+        double *hv = v + 6 * BB;
+        double hit[BMAX + 2];
+        for (; hm; hm &= hm - 1, hv += BB) {
+          int bit = __builtin_ctz(hm);
+          int total = bit < 22 ? bit : bit - 10;
+          const double *gs = g + size_t(stand_class(total)) * BB;
+          for (size_t b = 0; b < BB; ++b) hv[b] = gs[b];
+          if ((HITTABLE >> bit) & 1) {
+            hit_value(bit, hit);
+            vmax_into(hv, hit, BB);
+          }
+        }
+        for (; dm; dm &= dm - 1, hv += BB) {
+          int bit = __builtin_ctz(dm);
+          int total = bit < 22 ? bit : bit - 10;
+          const double *gs = g + size_t(stand_class(total)) * BB;
+          for (size_t b = 0; b < BB; ++b) hv[b] = gs[b];
+          if ((HITTABLE >> bit) & 1) {
+            hit_value(bit, hit);
+            vmax_into(hv, hit, BB);
+          }
+          if ((jx.dbl_ok >> bit) & 1) {
+            double dbl[BMAX + 2], term[BMAX + 2];
+            vzero(dbl, BB);
+            for (int q = 0; q < nact; ++q) {
+              int c = act[q];
+              int cls = dcls_[bit][c];
+              if (cls == 6) {
+                vaxpy(dbl, t.pc[c], minus2, BB);
+              } else {
+                if (!cgp[c]) missing("G");
+                const double *cg = cgp[c] + size_t(cls) * BB;
+                for (size_t b = 0; b < BB; ++b) term[b] = 2.0 * cg[b];
+                vaxpy(dbl, t.pc[c], term, BB);
+              }
+            }
+            vmax_into(hv, dbl, BB);
+          }
+        }
+      }
+    }
+  }
+
+  // One pair's own states at nodes [a, b_end) of its overlay.
+  void overlay_range(const JCtx &jx, const PairInfo &pi, const OLayer &l, Vals &lv, const OLayer *och,
+                     const Vals *ocv, const GLayer &gl, const Vals &gv, const GLayer *gch, const Vals *gcv, int L,
+                     size_t a, size_t b_end, double *root) const {
+    switch (jx.BB) {
+      case 2: return overlay_range_t<2>(jx, pi, l, lv, och, ocv, gl, gv, gch, gcv, L, a, b_end, root);
+      case 4: return overlay_range_t<4>(jx, pi, l, lv, och, ocv, gl, gv, gch, gcv, L, a, b_end, root);
+      case 6: return overlay_range_t<6>(jx, pi, l, lv, och, ocv, gl, gv, gch, gcv, L, a, b_end, root);
+      case 8: return overlay_range_t<8>(jx, pi, l, lv, och, ocv, gl, gv, gch, gcv, L, a, b_end, root);
+      default: return overlay_range_t<10>(jx, pi, l, lv, och, ocv, gl, gv, gch, gcv, L, a, b_end, root);
+    }
+  }
+  template <size_t BB>
+  void overlay_range_t(const JCtx &jx, const PairInfo &pi, const OLayer &l, Vals &lv, const OLayer *och,
+                       const Vals *ocv, const GLayer &gl, const Vals &gv, const GLayer *gch, const Vals *gcv, int L,
+                       size_t a, size_t b_end, double *root) const {
+    const int B = jx.B;
+    const size_t NO = size_t(NH_ - 1);
+    size_t gcur = lower(gl.key, l.key[a]);
+    size_t gccur[NR], occur[NR];
+    for (int c = 0; c < NR; ++c) {
+      gccur[c] = gch ? lower(gch->key, l.key[a] + unit(c)) : 0;
+      occur[c] = och ? lower(och->key, l.key[a] + unit(c)) : 0;
+    }
+    const int n = jx.N - L;
+    static const double kZeros[BMAX + 2] = {0};
+    auto owptr = [&](const OLayer &ly, const Vals &vl, ptrdiff_t j, int ms) -> const double * {
+      if (j < 0) missing("node");
+      uint32_t w = ly.w[size_t(j)];
+      if (!((w >> ms) & 1)) missing("W");
+      return &vl.val[(vl.off[j] + size_t(__builtin_popcount(w & ((1u << ms) - 1)))) * BB];
+    };
+    JTmp t;
+    for (size_t i = a; i < b_end; ++i) {
+      uint64_t key = l.key[i];
+      node_probs(jx, key, n, t);
+      ptrdiff_t gi = seek(gl.key, gcur, key);
+      ptrdiff_t gc[NR], oc[NR];
+      for (int c = 0; c < NR; ++c) {
+        gc[c] = (t.any[c] && gch) ? seek(gch->key, gccur[c], key + unit(c)) : -1;
+        oc[c] = (t.any[c] && och) ? seek(och->key, occur[c], key + unit(c)) : -1;
+      }
+      double *v = &lv.val[lv.off[i] * BB];
+      // "needs a card" states
+      int widx = 0;
+      for (uint32_t wb = l.w[i]; wb; wb &= wb - 1, ++widx) {
+        int ms = __builtin_ctz(wb);
+        int m = cm_[ms], s = cs_[ms], hc = hcanon_[ms];
+        bool rs = s > 0 && pi.resplit_ok;
+        double *acc = v + size_t(widx) * BB;
+        vzero(acc, BB);
+        for (int c = 0; c < NR; ++c) {
+          if (!t.any[c]) continue;
+          const double *x;
+          if (hc == 0) {
+            // the new hand is the last one: its two-card state is shared
+            ptrdiff_t j = gc[c];
+            if (j < 0) missing("node");
+            int bit = pi.fbit[c];
+            uint32_t d = gch->d[j];
+            if (!((d >> bit) & 1)) missing("D");
+            x = &gcv->val[(gcv->off[j] + (gch->g[j] ? 6 : 0) + size_t(__builtin_popcount(gch->h[j])) +
+                           size_t(__builtin_popcount(d & ((1u << bit) - 1)))) * BB];
+          } else {
+            ptrdiff_t j = oc[c];
+            if (j < 0) missing("node");
+            size_t q = size_t(j) * NO + size_t(hc - 1);
+            uint32_t f = och->f[q];
+            if (!((f >> c) & 1)) missing("F");
+            x = &ocv->val[(ocv->off[j] + ocv->hoff[q] + size_t(__builtin_popcount(och->h[q])) +
+                           size_t(__builtin_popcount(f & ((1u << c) - 1)))) * BB];
+          }
+          if (c == pi.p && rs) vaxpy_max(acc, t.pc[c], x, owptr(*och, *ocv, oc[c], ms_[m + 1][s - 1]), BB);
+          else vaxpy(acc, t.pc[c], x, BB);
+        }
+        if (L == 2)
+          for (int b = 0; b < B; ++b) root[b] = acc[b];
+      }
+      // hands with others waiting
+      for (int hc = 1; hc < NH_; ++hc) {
+        size_t qi = i * NO + size_t(hc - 1);
+        uint32_t hm = l.h[qi];
+        uint32_t fm = l.f[qi];
+        if (!(hm | fm)) continue;
+        int m = hm_[hc], s = hs_[hc];
+        int nms = ms_[m - 1][s];
+        const double *nextv = owptr(l, lv, ptrdiff_t(i), nms);
+        if (gi < 0 || !gl.g[gi]) missing("G");
+        const double *g = &gv.val[gv.off[gi] * BB];
+        uint32_t hitmask = 0;
+        bool anydbl = false;
+        if (!pi.locked) {
+          hitmask = hm;
+          for (uint32_t x = fm; x; x &= x - 1) {
+            int c0 = __builtin_ctz(x);
+            hitmask |= 1u << pi.fbit[c0];
+            anydbl |= pi.fdbl[c0];
+          }
+          hitmask &= HITTABLE;
+        }
+        int act[NR], nact = 0;
+        const double *dptr[NR][33], *cnp[NR], *cgp[NR];
+        double cbust[NR][BMAX + 2];
+        if (hitmask || anydbl) {
+          for (int c = 0; c < NR; ++c) {
+            if (!t.any[c]) continue;
+            bool bust;
+            uint32_t need = shift(hitmask, c, bust);
+            cnp[c] = kZeros;
+            cgp[c] = nullptr;
+            if (bust || anydbl) cnp[c] = owptr(*och, *ocv, oc[c], nms);
+            if (need) {
+              ptrdiff_t j = oc[c];
+              if (j < 0) missing("node");
+              size_t q = size_t(j) * NO + size_t(hc - 1);
+              uint32_t cm = och->h[q];
+              if (need & ~cm) missing("H");
+              const double *src = &ocv->val[(ocv->off[j] + ocv->hoff[q]) * BB];
+              for (; cm; cm &= cm - 1, src += BB) dptr[c][__builtin_ctz(cm)] = src;
+              if (anydbl) {
+                ptrdiff_t jg = gc[c];
+                if (jg < 0 || !gch->g[jg]) missing("G");
+                cgp[c] = &gcv->val[gcv->off[jg] * BB];
+              }
+            }
+            for (size_t b = 0; b < BB; ++b) cbust[c][b] = cnp[c][b] - 1.0;
+            dptr[c][32] = cbust[c];
+            act[nact++] = c;
+          }
+        }
+        auto hit_value = [&](int bit, double *out) {
+          const uint8_t *tr = trans2_[bit];
+          vzero(out, BB);
+          for (int q = 0; q < nact; ++q) {
+            int c = act[q];
+            vaxpy(out, t.pc[c], dptr[c][tr[c]], BB);
+          }
+        };
+        double *hv = v + size_t(lv.hoff[qi]) * BB;
+        double hit[BMAX + 2];
+        for (; hm; hm &= hm - 1, hv += BB) {
+          int bit = __builtin_ctz(hm);
+          int total = bit < 22 ? bit : bit - 10;
+          vadd(hv, g + size_t(stand_class(total)) * BB, nextv, BB);
+          if (!pi.locked && ((HITTABLE >> bit) & 1)) {
+            hit_value(bit, hit);
+            vmax_into(hv, hit, BB);
+          }
+        }
+        for (; fm; fm &= fm - 1, hv += BB) {
+          int c0 = __builtin_ctz(fm);
+          int bit = pi.fbit[c0];
+          int total = bit < 22 ? bit : bit - 10;
+          vadd(hv, g + size_t(stand_class(total)) * BB, nextv, BB);
+          if (pi.locked) continue;
+          hit_value(bit, hit);
+          vmax_into(hv, hit, BB);
+          if (pi.fdbl[c0]) {
+            double dbl[BMAX + 2], term[BMAX + 2];
+            vzero(dbl, BB);
+            for (int q = 0; q < nact; ++q) {
+              int c = act[q];
+              const double *cn = cnp[c];
+              int cls = dcls_[bit][c];
+              if (cls == 6) {
+                for (size_t b = 0; b < BB; ++b) term[b] = cn[b] - 2.0;
+              } else {
+                if (!cgp[c]) missing("G");
+                const double *cg = cgp[c] + size_t(cls) * BB;
+                for (size_t b = 0; b < BB; ++b) term[b] = 2.0 * cg[b] + cn[b];
+              }
+              vaxpy(dbl, t.pc[c], term, BB);
+            }
+            vmax_into(hv, dbl, BB);
           }
         }
       }

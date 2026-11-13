@@ -6,6 +6,7 @@
 //        LayeredSplitSolver - the fast one, single- and multi-threaded
 //   3. mid-split roots of the layered solver recombine to the fresh-split value
 //   4. batched multi-upcard evaluation and shared plans against one position at a time
+//   5. all pairs on one shared lattice against each pair solved on its own
 #include <cstdio>
 #include <cstdlib>
 #include <random>
@@ -215,6 +216,45 @@ int main(int argc, char **argv) {
     }
   }
   printf("batched evaluation ok: %d batches, %d positions\n", batches, positions);
+
+  // 5. all pairs on one shared lattice against each pair solved on its own
+  int joint_positions = 0;
+  for (int trial = 0; trial < (quick ? 3 : 8); ++trial) {
+    Rules r;
+    r.h17 = rnd(0, 1);
+    r.das = rnd(0, 3) != 0;
+    r.double_on = DoubleOn(rnd(0, 3) % 3);
+    r.max_splits = 1 + trial % 3;
+    r.resplit_aces = rnd(0, 1);
+    r.hit_split_aces = trial % 2;
+    DealerTable dt(r.h17);
+    int decks = r.max_splits == 3 ? 1 : rnd(1, 3);
+    Counts shoe = full_shoe(decks);
+    for (int i = rnd(0, 12 * decks); i > 0; --i) {
+      int x = std::min(rnd(0, 12), 9);
+      if (shoe[x] > 3) shoe[x]--;
+    }
+    std::vector<int> pairs;
+    for (int p = r.hit_split_aces ? 0 : 1; p < NR; ++p)
+      if (shoe[p] >= 3) pairs.push_back(p);
+    LayeredSplitSolver solver(r, dt, 4);
+    auto J = solver.joint_plan(shoe, pairs);
+    std::vector<int> ups;
+    for (int u = 0; u < NR; ++u)
+      if (shoe[u] >= 1 && rnd(0, 3) != 0) ups.push_back(u);
+    if (ups.empty()) ups.push_back(TEN);
+    auto got = solver.joint_evaluate(J, ups);
+    for (int p : pairs)
+      for (size_t j = 0; j < ups.size(); ++j) {
+        Counts c = shoe;
+        c[p] -= 2;
+        c[ups[j]]--;
+        if (c[ups[j]] < 0) continue;
+        check("shared lattice vs pair on its own", got[size_t(p)][j], solver.solve(c, p, ups[j]).value);
+        ++joint_positions;
+      }
+  }
+  printf("shared lattice ok: %d positions\n", joint_positions);
 
   if (failures) {
     printf("%d FAILURES\n", failures);

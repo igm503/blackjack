@@ -118,13 +118,27 @@ pair. The speedups, in the order they were made:
    with tens in the low bits, so runs of neighbouring card sets share those
    counts and that part is computed once per run.
 
-On one thread the remaining time is now spread evenly: state values about
-40%, dealer evaluation 25%, locating children and bookkeeping the rest.
+9. **Whole pair in one pass.** Given enough memory for the value buffers
+   (`--memory-gb`, default a third of RAM), all ten upcards of a pair go
+   through one backward pass.
+10. **Kernels compiled per stride.** The loops over upcards are short; with
+    the number of upcards per pass a compile-time constant they unroll into
+    straight-line vector code. The state-value pass got 1.8 times faster.
+
+On one thread the remaining time is roughly: dealer evaluation 45%, state
+values 30%, locating children and bookkeeping 25%.
+
+`--joint` solves all pairs on one shared lattice instead. Different pairs
+reach the same card sets (217 million nodes over the nine pairs are 120
+million distinct sets), and the dealer values and last-hand states, 93% of
+everything stored, depend only on the card set. That is 1.4 times fewer
+evaluations, but the shared layers are twice as fat, so fewer upcards fit per
+pass, and with 32 GB it comes out no faster. It is off by default.
 
 ## How much faster could it get?
 
 Whole round, 6 decks, resplit to four hands is about 2 billion (card set,
-upcard) evaluations, each costing about 200 nanoseconds of CPU.
+upcard) evaluations, each costing about 120 nanoseconds of CPU.
 
 About two thirds of those states exist only to confirm that hitting a hard 17
 to 20 in a split hand is bad. Skipping them and bounding the skipped moves
@@ -140,7 +154,8 @@ the history of this branch, commit 149d1c4). Other things that did not help:
 
 Every one of those card sets is a different situation the player could be in,
 with its own exact answer, so full enumeration has to visit them all. One
-second would need about 4 ns of CPU per evaluation on this machine.
+second would need about 4 ns of CPU per evaluation on this machine; it takes
+about 39 seconds.
 
 ## Benchmark history
 
@@ -162,14 +177,15 @@ python3 bench/run.py show
 | 2 | Settle finished hands early | 29.0 s | stopped at 60M states | 31.3 s | stopped at 60M states |
 | 3 | Layered streaming solver | 4.38 s | 1m 19s | 28.7 s | 1h 03m |
 | 4 | Breadth-first dealer evaluation | 3.42 s | 42.6 s | 5.53 s | 29m 22s |
-| 5 | Multi-threaded layers | 0.97 s | 6.84 s | 0.79 s | 4m 25s |
-| 6 | One forward pass per pair | 0.73 s | 6.27 s | 0.54 s | 2m 42s |
-| 7 | SIMD dealer evaluation | 0.61 s | 5.08 s | 0.41 s | 2m 03s |
-| 8 | Dynamic scheduling | 0.58 s | 4.87 s | 0.37 s | 1m 59s |
-| 9 | All upcards in one pass | 0.55 s | 5.04 s | 0.35 s | 1m 55s |
-| 10 | One dealer walk for all upcards | 0.57 s | 4.82 s | 0.34 s | 1m 33s |
+| 5 | Multi-threaded layers | 0.58 s | 5.79 s | 0.67 s | 3m 05s |
+| 6 | One forward pass per pair | 0.56 s | 5.38 s | 0.50 s | 2m 11s |
+| 7 | SIMD dealer evaluation | 0.52 s | 4.94 s | 0.30 s | 1m 29s |
+| 8 | Dynamic scheduling | 0.41 s | 3.94 s | 0.30 s | 1m 24s |
+| 9 | All upcards in one pass | 0.41 s | 3.95 s | 0.30 s | 1m 11s |
+| 10 | One dealer walk for all upcards | 0.40 s | 3.90 s | 0.30 s | 1m 03s |
+| 11 | Whole pair in one pass, kernels per stride | 0.41 s | 3.92 s | 0.30 s | 38.7 s |
 
-Apple M2 Max, 12 threads; iterations 1 to 4 are single-threaded, and 1 and 2 are stopped once their hash table passes 60 million states (about 5 GB). The machine was in use while these were taken and timings of the long case varied by 20 to 40% between runs; the last two rows are the best of three. Every iteration returns the same EV for each case to 15 digits.
+Apple M2 Max, 12 threads. Iterations 1 to 4 are single-threaded and were timed while the machine was busy; 1 and 2 are stopped once their hash table passes 60 million states (about 5 GB). Iterations 5 onward were timed on an idle machine. Every iteration returns the same EV for each case to 15 digits.
 
 ## Checking it
 

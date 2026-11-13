@@ -71,6 +71,8 @@ static void usage() {
           "  --resplit-aces  --hit-split-aces  --surrender none|early|late  --bj-payout X\n"
           "other:\n"
           "  --threads N\n"
+          "  --joint              whole round: solve all pairs on one shared lattice (needs more memory)\n"
+          "  --memory-gb X        working memory for whole-round value buffers (default: a third of RAM)\n"
           "  --measure-info       report the largest observed value of one extra seen card\n");
   exit(2);
 }
@@ -85,7 +87,8 @@ struct Args {
   std::string player, up, split_pair, bench_case, variant = "current";
   int pending = 0, splits_left = 0;
   bool json = false, table = false;
-  bool measure_info = false, no_batch = false;
+  bool measure_info = false, no_batch = false, joint = false;
+  double memory_gb = 0;
   int threads = 0;
 };
 
@@ -133,6 +136,8 @@ static Args parse(int argc, char **argv) {
     else if (f == "--variant") a.variant = val();
     else if (f == "--measure-info") a.measure_info = true;
     else if (f == "--no-batch") a.no_batch = true;
+    else if (f == "--joint") a.joint = true;
+    else if (f == "--memory-gb") a.memory_gb = atof(val().c_str());
     else if (f == "--json") a.json = true;
     else if (f == "--table") a.table = true;
     else usage();
@@ -153,6 +158,8 @@ static std::string rules_str(const Rules &r) {
 static void configure(Engine &eng, const Args &a) {
   eng.measure_info = a.measure_info;
   eng.batch_upcards = !a.no_batch;
+  eng.joint_pairs = a.joint;
+  if (a.memory_gb > 0) eng.eval_memory_budget = size_t(a.memory_gb * double(size_t(1) << 30));
 }
 static void report_info(const Engine &eng) {
   if (eng.measure_info) printf("largest observed value of one extra seen card to later hands: %.3e\n", eng.max_info_seen);
@@ -314,12 +321,14 @@ static int cmd_bench_case(const Args &a) {
   else if (a.variant == "simd") ;
   else if (a.variant == "chunks") g_static_schedule = false;
   else if (a.variant == "batch") g_static_schedule = false, g_dealer_union = false;
+  else if (a.variant == "union") g_static_schedule = false;
+  else if (a.variant == "joint") g_static_schedule = false;
   else if (a.variant == "carry-all") algo = SplitAlgo::CarryAll, threads = 1, g_dealer_depth_first = true;
   else if (a.variant == "settle-early") algo = SplitAlgo::TopDown, threads = 1, g_dealer_depth_first = true;
   else if (a.variant == "layered") threads = 1, g_dealer_depth_first = true, g_dealer_simd = false, share_plans = false;
   else if (a.variant == "bfs-dealer") threads = 1, g_dealer_simd = false, share_plans = false;
   else if (a.variant != "current" && a.variant != "simd" && a.variant != "threads" && a.variant != "shared-plan" &&
-           a.variant != "chunks" && a.variant != "batch") { fprintf(stderr, "unknown variant\n"); return 2; }
+           a.variant != "chunks" && a.variant != "batch" && a.variant != "union" && a.variant != "joint") { fprintf(stderr, "unknown variant\n"); return 2; }
 
   struct Case { const char *id; int decks, max_splits; const char *player, *up; };
   static const Case cases[] = {
@@ -334,8 +343,12 @@ static int cmd_bench_case(const Args &a) {
     Engine eng(rules, threads);
     eng.algo = algo;
     eng.share_plans = share_plans;
-    eng.batch_upcards = a.variant == "current" || a.variant == "batch";
+    eng.batch_upcards = a.variant == "current" || a.variant == "batch" || a.variant == "union" || a.variant == "joint";
+    eng.joint_pairs = a.variant == "joint";
     eng.state_limit = 60u * 1000 * 1000;  // ~5 GB of hash table
+    if (a.memory_gb > 0) eng.eval_memory_budget = size_t(a.memory_gb * double(size_t(1) << 30));
+    else if (a.variant != "current" && a.variant != "joint") eng.eval_memory_budget = size_t(6) << 30;  // as when those iterations were made
+    else eng.eval_memory_budget = Engine::default_memory_budget() * 3 / 2;      // half of RAM for the benchmark
     double ev = 0;
     size_t nodes = 0;
     auto t0 = std::chrono::steady_clock::now();

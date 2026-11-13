@@ -7,6 +7,7 @@
 #include <limits>
 #include <mutex>
 #include <string>
+#include <unistd.h>
 
 #include "bj.hpp"
 #include "split_layered.hpp"
@@ -223,9 +224,21 @@ struct Engine {
   int threads;
   SplitAlgo algo = SplitAlgo::Layered;
   size_t state_limit = ~size_t(0);  // TopDown / CarryAll only
-  size_t eval_memory_budget = size_t(6) << 30;  // working memory for concurrent upcards
+  // Working memory for the value buffers of one batched evaluation. More
+  // lets more upcards share a pass. Default: a third of physical memory.
+  size_t eval_memory_budget = default_memory_budget();
+  static size_t default_memory_budget() {
+    long pages = sysconf(_SC_PHYS_PAGES), size = sysconf(_SC_PAGE_SIZE);
+    size_t phys = pages > 0 && size > 0 ? size_t(pages) * size_t(size) : size_t(16) << 30;
+    return std::max(phys / 3, size_t(2) << 30);
+  }
   bool share_plans = true;  // one forward pass per pair, shared by all upcards
   bool batch_upcards = true;  // ... and all its upcards evaluated in one backward pass
+  // Solve all pairs on one shared lattice (dealer values and last-hand states
+  // computed once per set of cards). 1.4x fewer evaluations, but its layers
+  // are twice as fat, so with the memory of this machine (32 GB) fewer
+  // upcards fit per pass and it comes out no faster. Off by default.
+  bool joint_pairs = false;
   bool measure_info = false;  // diagnostic, see SplitOptions
   mutable std::mutex info_mutex;
   mutable double max_info_seen = 0;
@@ -452,10 +465,15 @@ struct Engine {
       auto eval_batched = [&](const LayeredSplitSolver &solver, const LayeredSplitSolver::Plan &P, int p,
                               int inner) {
         const std::vector<int> &us = ups[p];
-        size_t per = 1;
-        while (per < us.size() && per < size_t(LayeredSplitSolver::BMAX) &&
-               solver.batch_bytes(P, int(per) + 1) <= eval_memory_budget)
-          ++per;
+        // As many upcards per pass as fit in the budget, in batches of even
+        // size where possible (values are stored in pairs of lanes).
+        size_t fit = 1;
+        while (fit < us.size() && fit < size_t(LayeredSplitSolver::BMAX) &&
+               solver.batch_bytes(P, int(fit) + 1) <= eval_memory_budget)
+          ++fit;
+        size_t nb = (us.size() + fit - 1) / fit;
+        size_t per = (us.size() + nb - 1) / nb;
+        if (per % 2 && per < fit) ++per;
         for (size_t done = 0; done < us.size(); done += per) {
           std::vector<int> part(us.begin() + long(done), us.begin() + long(std::min(us.size(), done + per)));
           std::vector<Counts> unseen;
@@ -497,10 +515,62 @@ struct Engine {
       } else {
         // Big problems: one pair at a time to bound memory, every thread on it.
         LayeredSplitSolver solver(rules, dealer, threads, split_options());
+        bool handled[NR] = {false};
+        LayeredSplitSolver::Plan first_plan;
+        int first_pair = -1;
+        bool have_first = false;
+        if (batch_upcards && joint_pairs) {
+          // Every pair on one shared lattice: dealer values and the states of
+          // the last hand to be played are computed once per set of cards.
+          std::vector<int> jp;
+          for (int p = 0; p < NR; ++p)
+            if (!ups[p].empty() && !(p == ACE && !rules.hit_split_aces)) jp.push_back(p);
+          // Is there memory for at least half the upcards per pass on the
+          // shared lattice? Its fattest layer holds about twice the values of
+          // the largest pair's, which is cheap to plan first (and is reused
+          // below if the answer is no).
+          if (!jp.empty()) {
+            first_pair = jp.front();
+            first_plan = solver.plan(supply_for(first_pair), first_pair);
+            have_first = true;
+            size_t half = (size_t(NR) / 2 + 1) & ~size_t(1);
+            if (2 * 8 * half * 2 * size_t(first_plan.max_vals) > eval_memory_budget) jp.clear();
+          }
+          if (!jp.empty()) {
+            auto J = solver.joint_plan(shoe, jp);
+            std::vector<int> us;
+            for (int u = 0; u < NR; ++u)
+              if (shoe[u] > 0) us.push_back(u);
+            size_t fit = 1;
+            while (fit < us.size() && fit < size_t(LayeredSplitSolver::BMAX) &&
+                   solver.joint_bytes(J, int(fit) + 1) <= eval_memory_budget)
+              ++fit;
+            // The shared lattice has fat layers; if memory only allows a few
+            // upcards per pass, solving the pairs one by one is faster.
+            if (fit * 2 >= us.size()) {
+              size_t nb = (us.size() + fit - 1) / fit;
+              size_t per = (us.size() + nb - 1) / nb;
+              if (per % 2 && per < fit) ++per;
+              LayeredSplitSolver::JointWorkspace jws;
+              for (size_t done = 0; done < us.size(); done += per) {
+                std::vector<int> part(us.begin() + long(done), us.begin() + long(std::min(us.size(), done + per)));
+                auto res = solver.joint_evaluate(J, part, threads, &jws);
+                for (int p : jp)
+                  for (size_t j = 0; j < part.size(); ++j) {
+                    int u = part[j];
+                    if (std::find(ups[p].begin(), ups[p].end(), u) == ups[p].end()) continue;
+                    out.cell[u][p][p].split = res[size_t(p)][j];
+                  }
+              }
+              nodes += J.pair_nodes * us.size();
+              for (int p : jp) handled[p] = true;
+            }
+          }
+        }
         // low pairs first: they are the largest, so the workspace is sized once
         for (int p = 0; p < NR; ++p) {
-          if (ups[p].empty()) continue;
-          auto P = solver.plan(supply_for(p), p);
+          if (ups[p].empty() || handled[p]) continue;
+          auto P = (have_first && p == first_pair) ? std::move(first_plan) : solver.plan(supply_for(p), p);
           if (batch_upcards) {
             eval_batched(solver, P, p, threads);
             continue;

@@ -206,7 +206,7 @@
    "results": {
     "hand-88vT-6d": {
      "status": "ok",
-     "seconds": 0.965575,
+     "seconds": 0.577636,
      "ev": -0.474878331523948,
      "nodes": 8091982,
      "threads": 12,
@@ -214,7 +214,7 @@
     },
     "hand-22v6-8d": {
      "status": "ok",
-     "seconds": 6.837852,
+     "seconds": 5.793536,
      "ev": 0.236864147239738,
      "nodes": 69843427,
      "threads": 12,
@@ -222,7 +222,7 @@
     },
     "round-6d-spl1": {
      "status": "ok",
-     "seconds": 0.785564,
+     "seconds": 0.666096,
      "ev": -0.00456843635361194,
      "nodes": 8906483,
      "threads": 12,
@@ -230,15 +230,15 @@
     },
     "round-6d-spl3": {
      "status": "ok",
-     "seconds": 265.446211,
+     "seconds": 185.243537,
      "ev": -0.00402812242351966,
      "nodes": 2171317761,
      "threads": 12,
      "runs": 1
     }
    },
-   "commit": "8c6d0c1+",
-   "recorded_at": "2026-11-12 01:33:27"
+   "commit": "e888766",
+   "recorded_at": "2026-11-12 22:39:36"
   },
   {
    "id": "v6-shared-plan",
@@ -248,7 +248,7 @@
    "results": {
     "hand-88vT-6d": {
      "status": "ok",
-     "seconds": 0.732005,
+     "seconds": 0.55864,
      "ev": -0.474878331523948,
      "nodes": 8091982,
      "threads": 12,
@@ -256,7 +256,7 @@
     },
     "hand-22v6-8d": {
      "status": "ok",
-     "seconds": 6.269327,
+     "seconds": 5.376092,
      "ev": 0.236864147239738,
      "nodes": 69843427,
      "threads": 12,
@@ -264,7 +264,7 @@
     },
     "round-6d-spl1": {
      "status": "ok",
-     "seconds": 0.541381,
+     "seconds": 0.496926,
      "ev": -0.00456843635361194,
      "nodes": 8907790,
      "threads": 12,
@@ -272,15 +272,15 @@
     },
     "round-6d-spl3": {
      "status": "ok",
-     "seconds": 162.337705,
+     "seconds": 131.312119,
      "ev": -0.00402812242351966,
      "nodes": 2173801630,
      "threads": 12,
      "runs": 1
     }
    },
-   "commit": "8c6d0c1+",
-   "recorded_at": "2026-11-12 01:38:20"
+   "commit": "e888766+",
+   "recorded_at": "2026-11-12 22:43:03"
   },
   {
    "id": "v7-simd",
@@ -290,7 +290,7 @@
    "results": {
     "hand-88vT-6d": {
      "status": "ok",
-     "seconds": 0.605624,
+     "seconds": 0.516437,
      "ev": -0.474878331523948,
      "nodes": 8091982,
      "threads": 12,
@@ -298,7 +298,7 @@
     },
     "hand-22v6-8d": {
      "status": "ok",
-     "seconds": 5.076948,
+     "seconds": 4.941864,
      "ev": 0.236864147239738,
      "nodes": 69843427,
      "threads": 12,
@@ -306,7 +306,7 @@
     },
     "round-6d-spl1": {
      "status": "ok",
-     "seconds": 0.405797,
+     "seconds": 0.300478,
      "ev": -0.00456843635361194,
      "nodes": 8907790,
      "threads": 12,
@@ -314,22 +314,22 @@
     },
     "round-6d-spl3": {
      "status": "ok",
-     "seconds": 123.083309,
+     "seconds": 89.233767,
      "ev": -0.00402812242351966,
      "nodes": 2173801630,
      "threads": 12,
      "runs": 1
     }
    },
-   "commit": "8c6d0c1+",
-   "recorded_at": "2026-11-12 01:41:25"
+   "commit": "e888766+",
+   "recorded_at": "2026-11-12 22:45:34"
   },
   {
    "id": "v8-chunks",
    "results": {
     "hand-88vT-6d": {
      "status": "ok",
-     "seconds": 0.576631,
+     "seconds": 0.406932,
      "ev": -0.474878331523948,
      "nodes": 8091982,
      "threads": 12,
@@ -337,7 +337,7 @@
     },
     "hand-22v6-8d": {
      "status": "ok",
-     "seconds": 4.867586,
+     "seconds": 3.937237,
      "ev": 0.236864147239738,
      "nodes": 69843427,
      "threads": 12,
@@ -345,7 +345,7 @@
     },
     "round-6d-spl1": {
      "status": "ok",
-     "seconds": 0.367941,
+     "seconds": 0.298725,
      "ev": -0.00456843635361194,
      "nodes": 8907790,
      "threads": 12,
@@ -353,7 +353,7 @@
     },
     "round-6d-spl3": {
      "status": "ok",
-     "seconds": 118.628668,
+     "seconds": 83.582738,
      "ev": -0.00402812242351966,
      "nodes": 2173801630,
      "threads": 12,
@@ -363,15 +363,15 @@
    "label": "Dynamic scheduling",
    "note": "Work is handed to threads in small chunks instead of one fixed share each, and the forward pass precomputes what each node sends to its children once instead of once per card. No measurable gain on the whole-round cases.",
    "variant": "chunks",
-   "commit": "8c6d0c1+",
-   "recorded_at": "2026-11-12 01:43:47"
+   "commit": "e888766+",
+   "recorded_at": "2026-11-12 22:47:21"
   },
   {
    "id": "v9-batch",
    "results": {
     "hand-88vT-6d": {
      "status": "ok",
-     "seconds": 0.552954,
+     "seconds": 0.406964,
      "ev": -0.474878331523948,
      "nodes": 8091982,
      "threads": 12,
@@ -379,7 +379,7 @@
     },
     "hand-22v6-8d": {
      "status": "ok",
-     "seconds": 5.035247,
+     "seconds": 3.950436,
      "ev": 0.236864147239738,
      "nodes": 69843427,
      "threads": 12,
@@ -387,7 +387,7 @@
     },
     "round-6d-spl1": {
      "status": "ok",
-     "seconds": 0.352992,
+     "seconds": 0.297451,
      "ev": -0.00456843635361194,
      "nodes": 8907790,
      "threads": 12,
@@ -395,25 +395,25 @@
     },
     "round-6d-spl3": {
      "status": "ok",
-     "seconds": 115.367889,
+     "seconds": 70.820098,
      "ev": -0.00402812242351966,
      "nodes": 2173801630,
      "threads": 12,
-     "runs": 2
+     "runs": 1
     }
    },
    "label": "All upcards in one pass",
    "note": "For the big whole-round problems, a pair's upcards are evaluated together: the node is decoded and its children located once, the values of the upcards sit side by side, and dealer evaluations run eight card compositions per pass. Profiling: the dealer evaluation is half of the remaining CPU time.",
    "variant": "batch",
-   "commit": "842439f+",
-   "recorded_at": "2026-11-12 21:23:58"
+   "commit": "e888766+",
+   "recorded_at": "2026-11-12 22:48:58"
   },
   {
-   "id": "v10-current",
+   "id": "v10-union",
    "results": {
     "hand-88vT-6d": {
      "status": "ok",
-     "seconds": 0.574117,
+     "seconds": 0.404091,
      "ev": -0.474878331523948,
      "nodes": 8091982,
      "threads": 12,
@@ -421,7 +421,7 @@
     },
     "hand-22v6-8d": {
      "status": "ok",
-     "seconds": 4.824969,
+     "seconds": 3.896472,
      "ev": 0.236864147239738,
      "nodes": 69843427,
      "threads": 12,
@@ -429,7 +429,7 @@
     },
     "round-6d-spl1": {
      "status": "ok",
-     "seconds": 0.340644,
+     "seconds": 0.296993,
      "ev": -0.00456843635361194,
      "nodes": 8907790,
      "threads": 12,
@@ -437,18 +437,60 @@
     },
     "round-6d-spl3": {
      "status": "ok",
-     "seconds": 92.74161,
+     "seconds": 63.288845,
      "ev": -0.00402812242351966,
      "nodes": 2173801630,
      "threads": 12,
-     "runs": 2
+     "runs": 1
     }
    },
    "label": "One dealer walk for all upcards",
-   "note": "The ten upcards' dealer tries have 6,148 nodes in total but their union has 1,695, and an upcard's numerators differ from the shared ones by one factor. With low ranks first, 38% of the union depends only on the counts of A-5, which runs of neighbouring card sets share (layers are now sorted with tens in the low bits), so that part is computed once per run. Dealer CPU drops 2.3x on one thread; with all threads the gain is smaller.",
+   "note": "The ten upcards' dealer tries have 6,148 nodes in total but their union has 1,695, and an upcard's numerators differ from the shared ones by one factor. With low ranks first, 38% of the union depends only on the counts of A-5, which runs of neighbouring card sets share (layers are now sorted with tens in the low bits), so that part is computed once per run. Dealer CPU drops 2.3x on one thread.",
+   "variant": "union",
+   "commit": "e888766+",
+   "recorded_at": "2026-11-12 22:57:14"
+  },
+  {
+   "id": "v11-current",
+   "results": {
+    "hand-88vT-6d": {
+     "status": "ok",
+     "seconds": 0.406802,
+     "ev": -0.474878331523948,
+     "nodes": 8091982,
+     "threads": 12,
+     "runs": 3
+    },
+    "hand-22v6-8d": {
+     "status": "ok",
+     "seconds": 3.915708,
+     "ev": 0.236864147239738,
+     "nodes": 69843427,
+     "threads": 12,
+     "runs": 3
+    },
+    "round-6d-spl1": {
+     "status": "ok",
+     "seconds": 0.296679,
+     "ev": -0.00456843635361194,
+     "nodes": 8907790,
+     "threads": 12,
+     "runs": 3
+    },
+    "round-6d-spl3": {
+     "status": "ok",
+     "seconds": 38.695839,
+     "ev": -0.00402812242351966,
+     "nodes": 2173801630,
+     "threads": 12,
+     "runs": 1
+    }
+   },
+   "label": "Whole pair in one pass, kernels per stride",
+   "note": "Two changes. With half of RAM (16 GB here) for value buffers instead of 6 GB, all ten upcards of even the largest pairs fit in one pass (the command line defaults to a third of RAM; --memory-gb changes it). And the kernels are compiled once per number of upcards per pass, so the short loops over upcards unroll into straight-line vector code: the state-value pass got 1.8x faster. Also tried: solving all pairs on one shared lattice (--joint). Different pairs reach the same card sets, so that needs 1.4x fewer evaluations, but its layers are twice as fat and on 32 GB it comes out no faster.",
    "variant": "current",
-   "commit": "842439f+",
-   "recorded_at": "2026-11-12 21:26:45"
+   "commit": "e888766+",
+   "recorded_at": "2026-11-12 23:42:38"
   }
  ]
 }

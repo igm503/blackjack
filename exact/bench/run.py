@@ -113,13 +113,24 @@ VARIANTS = [
                 "evaluation is half of the remaining CPU time.",
     },
     {
-        "variant": "current",
+        "variant": "union",
         "label": "One dealer walk for all upcards",
         "note": "The ten upcards' dealer tries have 6,148 nodes in total but their union has 1,695, and "
                 "an upcard's numerators differ from the shared ones by one factor. With low ranks first, "
                 "38% of the union depends only on the counts of A-5, which runs of neighbouring card sets "
                 "share (layers are now sorted with tens in the low bits), so that part is computed once "
-                "per run. Dealer CPU drops 2.3x on one thread; with all threads the gain is smaller.",
+                "per run. Dealer CPU drops 2.3x on one thread.",
+    },
+    {
+        "variant": "current",
+        "label": "Whole pair in one pass, kernels per stride",
+        "note": "Two changes. With half of RAM (16 GB here) for value buffers instead of 6 GB, all ten "
+                "upcards of even the largest pairs fit in one pass (the command line defaults to a third "
+                "of RAM; --memory-gb changes it). And the kernels are compiled once per number of upcards "
+                "per pass, so the short loops over upcards unroll into straight-line vector code: the "
+                "state-value pass got 1.8x faster. Also tried: solving all pairs on one shared lattice "
+                "(--joint). Different pairs reach the same card sets, so that needs 1.4x fewer "
+                "evaluations, but its layers are twice as fat and on 32 GB it comes out no faster.",
     },
 ]
 
@@ -270,7 +281,7 @@ def backfill(timeout: float):
 
     # The multi-threaded build needs the machine to itself; the single-threaded
     # iterations can then share it (two memory-hungry hash solvers in series).
-    for name in ("threads", "shared-plan", "simd", "chunks", "batch", "current"):
+    for name in ("threads", "shared-plan", "simd", "chunks", "batch", "union", "current"):
         go(name)
     with ThreadPoolExecutor(3) as pool:
         futures = [pool.submit(go, "bfs-dealer"), pool.submit(go, "layered"),
